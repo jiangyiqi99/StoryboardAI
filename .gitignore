@@ -1,0 +1,16 @@
+node_modules/
+dist/
+out/
+.vite/
+*.log
+.DS_Store
+
+# Local project runtime outputs can be large and are regenerated.
+*.aivproj/cache/**
+*.aivproj/proxies/**
+*.aivproj/thumbnails/**
+*.aivproj/renders/**
+*.aivproj/frames/**
+
+!samples/**/*.gitkeep
+!samples/**/project.json

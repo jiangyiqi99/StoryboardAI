@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node", "electron"],
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"],
+      "@main/*": ["src/main/*"],
+      "@project-system/*": ["src/project-system/*"],
+      "@media-engine/*": ["src/media-engine/*"],
+      "@ai-orchestrator/*": ["src/ai-orchestrator/*"],
+      "@editing/*": ["src/editing/*"],
+      "@model-proxy/*": ["src/model-proxy/*"]
+    }
+  },
+  "include": [
+    "electron.vite.config.ts",
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/project-system/**/*.ts",
+    "src/media-engine/**/*.ts",
+    "src/ai-orchestrator/**/*.ts",
+    "src/editing/**/*.ts",
+    "src/model-proxy/**/*.ts"
+  ]
+}
