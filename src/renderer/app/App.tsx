@@ -1,5 +1,4 @@
 import {
-  Bot,
   Clapperboard,
   Download,
   Film,
@@ -31,7 +30,7 @@ const toolItems: Array<{
 }> = [
   { key: "media-bin", label: "媒体库", icon: Folder },
   { key: "story-script", label: "分镜脚本", icon: Film },
-  { key: "assets", label: "素材", icon: Folder },
+  { key: "assets", label: "AI 素材", icon: Folder },
   { key: "ai-tools", label: "AI 工具", icon: Sparkles }
 ];
 
@@ -62,10 +61,6 @@ export const App = () => {
             <span className="saved-state">已保存</span>
           </div>
           <div className="topbar-actions">
-            <button className="ghost-button" type="button">
-              <Bot size={16} />
-              <span>AI 助手</span>
-            </button>
             <button
               className="primary-button"
               onClick={() => setIsExportOpen(true)}

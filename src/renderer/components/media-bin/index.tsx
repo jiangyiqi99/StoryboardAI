@@ -1,13 +1,20 @@
 import { ChevronDown, Filter, MoreVertical, Music2, Plus, Search } from "lucide-react";
-import { useState, type DragEvent } from "react";
+import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { useEditor } from "../../app/EditorContext";
 import { formatDuration } from "../../app/mediaImport";
+import { isDesktopApiAvailable } from "../../ipc/api";
 
 export const MediaBin = () => {
   const { assets, importFiles, openMediaPicker, selectAsset, selectedAssetId } = useEditor();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [importMessage, setImportMessage] = useState<string>("素材就绪");
 
   const handleImportClick = async () => {
+    if (!isDesktopApiAvailable()) {
+      fileInputRef.current?.click();
+      return;
+    }
+
     const result = await openMediaPicker();
     const importedCount = result.assets.length;
     if (importedCount > 0) {
@@ -16,6 +23,20 @@ export const MediaBin = () => {
     }
 
     setImportMessage(result.errors[0] ?? "未选择素材");
+  };
+
+  const handleFileInputChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const { files } = event.currentTarget;
+    if (!files?.length) {
+      setImportMessage("未选择素材");
+      return;
+    }
+
+    const result = await importFiles(files);
+    setImportMessage(
+      result.assets.length > 0 ? `已导入 ${result.assets.length} 个素材` : result.errors[0] ?? "导入失败"
+    );
+    event.currentTarget.value = "";
   };
 
   const handlePanelDragOver = (event: DragEvent<HTMLElement>) => {
@@ -59,6 +80,15 @@ export const MediaBin = () => {
           </button>
         </div>
       </div>
+
+      <input
+        accept="video/*,audio/*,image/*"
+        className="media-input-hidden"
+        multiple
+        onChange={handleFileInputChange}
+        ref={fileInputRef}
+        type="file"
+      />
 
       <div className="tabs">
         {["全部", "视频", "图片", "音频", "文件夹"].map((tab, index) => (
