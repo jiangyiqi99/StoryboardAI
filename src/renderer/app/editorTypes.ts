@@ -35,6 +35,12 @@ export interface EditorTimelineClip {
   linkedClipId?: string;
 }
 
+export interface EditorStoryBeat {
+  id: string;
+  description: string;
+  durationSec: number;
+}
+
 export interface ImportMediaResult {
   assets: EditorMediaAsset[];
   errors: string[];

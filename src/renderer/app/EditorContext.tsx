@@ -12,6 +12,7 @@ import {
 } from "./mediaImport";
 import type {
   EditorMediaAsset,
+  EditorStoryBeat,
   EditorTimelineClip,
   EditorTimelineTrackId,
   ImportMediaResult
@@ -32,6 +33,7 @@ interface EditorContextValue {
   timelineClips: EditorTimelineClip[];
   selectedAssetId?: string;
   selectedClipId?: string;
+  storyBeats: EditorStoryBeat[];
   timelineDurationSec: number;
   timelineFps?: number;
   playheadSec: number;
@@ -44,6 +46,8 @@ interface EditorContextValue {
   openMediaPicker(): Promise<ImportMediaResult>;
   selectAsset(assetId: string): void;
   selectClip(clipId: string): void;
+  updateStoryBeat(beatId: string, changes: Partial<Omit<EditorStoryBeat, "id">>): void;
+  moveStoryBeat(beatId: string, targetBeatId: string): void;
   addAssetToTimeline(
     assetId: string,
     timelineStart?: number,
@@ -61,11 +65,15 @@ const EditorContext = createContext<EditorContextValue | null>(null);
 
 const initialAssets: EditorMediaAsset[] = [];
 const initialTimelineClips: EditorTimelineClip[] = [];
+const DEFAULT_STORY_BEAT_DURATION_SEC = 5;
 
 export const EditorProvider = ({ children }: { children: ReactNode }) => {
   const [assets, setAssets] = useState<EditorMediaAsset[]>(initialAssets);
   const [timelineClips, setTimelineClips] =
     useState<EditorTimelineClip[]>(initialTimelineClips);
+  const [storyBeats, setStoryBeats] = useState<EditorStoryBeat[]>(() => [
+    createBlankStoryBeat()
+  ]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | undefined>();
   const [selectedClipId, setSelectedClipId] = useState<string | undefined>();
   const [playheadSec, setPlayheadSec] = useState<number>(0);
@@ -196,6 +204,50 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     [timelineClips]
   );
 
+  const updateStoryBeat = useCallback(
+    (beatId: string, changes: Partial<Omit<EditorStoryBeat, "id">>) => {
+      setStoryBeats((current) =>
+        ensureTrailingBlankStoryBeat(
+          current.map((beat) =>
+            beat.id === beatId
+              ? {
+                  ...beat,
+                  ...changes,
+                  durationSec:
+                    changes.durationSec === undefined
+                      ? beat.durationSec
+                      : normalizeStoryBeatDuration(changes.durationSec)
+                }
+              : beat
+          )
+        )
+      );
+    },
+    []
+  );
+
+  const moveStoryBeat = useCallback((beatId: string, targetBeatId: string) => {
+    if (beatId === targetBeatId) {
+      return;
+    }
+
+    setStoryBeats((current) => {
+      const contentBeats = current.filter((beat) => !isBlankStoryBeat(beat));
+      const sourceIndex = contentBeats.findIndex((beat) => beat.id === beatId);
+      const targetIndex = contentBeats.findIndex((beat) => beat.id === targetBeatId);
+
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return current;
+      }
+
+      const nextBeats = [...contentBeats];
+      const [movedBeat] = nextBeats.splice(sourceIndex, 1);
+      nextBeats.splice(targetIndex, 0, movedBeat);
+
+      return ensureTrailingBlankStoryBeat(nextBeats);
+    });
+  }, []);
+
   const addAssetToTimeline = useCallback(
     (assetId: string, timelineStart = 0, targetTrackId?: EditorTimelineTrackId) => {
       const asset = assets.find((candidate) => candidate.id === assetId);
@@ -308,6 +360,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       timelineClips,
       selectedAssetId,
       selectedClipId,
+      storyBeats,
       selectedAsset,
       selectedClip,
       activeTimelineAsset,
@@ -320,6 +373,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       openMediaPicker,
       selectAsset,
       selectClip,
+      updateStoryBeat,
+      moveStoryBeat,
       addAssetToTimeline,
       moveClip,
       deleteClip,
@@ -348,10 +403,13 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectedClip,
       selectedClipId,
       setPlayhead,
+      storyBeats,
+      moveStoryBeat,
       splitClip,
       timelineFps,
       timelineDurationSec,
-      timelineClips
+      timelineClips,
+      updateStoryBeat
     ]
   );
 
@@ -601,6 +659,44 @@ function createClipId(): string {
 
 function roundTimelineTime(time: number): number {
   return Math.round(time * 1000) / 1000;
+}
+
+function createBlankStoryBeat(): EditorStoryBeat {
+  return {
+    id: `story-${crypto.randomUUID()}`,
+    description: "",
+    durationSec: DEFAULT_STORY_BEAT_DURATION_SEC
+  };
+}
+
+function ensureTrailingBlankStoryBeat(beats: EditorStoryBeat[]): EditorStoryBeat[] {
+  const nextBeats = beats.length > 0 ? [...beats] : [createBlankStoryBeat()];
+
+  while (
+    nextBeats.length > 1 &&
+    isBlankStoryBeat(nextBeats[nextBeats.length - 1]) &&
+    isBlankStoryBeat(nextBeats[nextBeats.length - 2])
+  ) {
+    nextBeats.pop();
+  }
+
+  if (!isBlankStoryBeat(nextBeats[nextBeats.length - 1])) {
+    nextBeats.push(createBlankStoryBeat());
+  }
+
+  return nextBeats;
+}
+
+function isBlankStoryBeat(beat: EditorStoryBeat): boolean {
+  return beat.description.trim().length === 0;
+}
+
+function normalizeStoryBeatDuration(durationSec: number): number {
+  if (!Number.isFinite(durationSec)) {
+    return DEFAULT_STORY_BEAT_DURATION_SEC;
+  }
+
+  return Math.max(0.1, Math.round(durationSec * 10) / 10);
 }
 
 function getDesktopFilePath(file: File): string | undefined {
