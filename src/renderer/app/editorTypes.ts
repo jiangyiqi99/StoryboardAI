@@ -7,6 +7,12 @@ export type EditorTimelineTrackId =
   | "voiceover-1"
   | "music-1";
 
+export interface EditorRgbColor {
+  r: number;
+  g: number;
+  b: number;
+}
+
 export interface EditorMediaAsset {
   id: string;
   name: string;
@@ -22,6 +28,7 @@ export interface EditorMediaAsset {
   metadata?: AssetMetadata;
   imported: boolean;
   variant?: string;
+  solidColor?: EditorRgbColor;
 }
 
 export interface EditorTimelineClip {

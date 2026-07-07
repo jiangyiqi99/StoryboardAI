@@ -449,6 +449,69 @@ button {
   border-radius: 6px;
 }
 
+.asset-solid-thumb,
+.ai-material-thumb,
+.timeline-clip-solid-thumb,
+.viewer-solid-color {
+  width: 100%;
+  height: 100%;
+}
+
+.asset-solid-thumb,
+.timeline-clip-solid-thumb,
+.viewer-solid-color {
+  display: block;
+}
+
+.ai-assets-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+}
+
+.ai-material-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+}
+
+.ai-material-card {
+  min-width: 0;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: grab;
+}
+
+.ai-material-card:active {
+  cursor: grabbing;
+}
+
+.ai-material-card:hover {
+  border-color: rgba(130, 198, 255, 0.52);
+  background: rgba(61, 139, 213, 0.1);
+}
+
+.ai-material-thumb {
+  display: grid;
+  height: 104px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  color: #eef7ff;
+}
+
+.ai-material-thumb.solid-template {
+  background:
+    linear-gradient(135deg, #f64f59, #f9d423 33%, #38ef7d 66%, #3276ff);
+}
+
+.ai-duration-field {
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
 .asset-thumb img,
 .story-image img,
 .viewer img,
@@ -1184,6 +1247,31 @@ button {
   gap: 10px;
 }
 
+.solid-color-dialog {
+  width: min(460px, 100%);
+}
+
+.solid-color-picker {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.solid-color-preview {
+  min-height: 118px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 7px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.rgb-field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-content: end;
+}
+
 .replace-panel {
   display: grid;
   grid-template-rows: auto auto 34px 89px auto auto auto 40px;
@@ -1473,6 +1561,16 @@ button {
   position: absolute;
   inset: 0;
   filter: brightness(0.82) saturate(1.08);
+}
+
+.timeline-clip.video.solid-color {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.timeline-clip-solid-thumb {
+  position: absolute;
+  inset: 0;
+  filter: saturate(1.02);
 }
 
 .timeline-clip-empty-thumb {

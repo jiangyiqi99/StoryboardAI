@@ -2,6 +2,7 @@ import { ChevronDown, Filter, MoreVertical, Music2, Plus, Search } from "lucide-
 import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { useEditor } from "../../app/EditorContext";
 import { formatDuration } from "../../app/mediaImport";
+import { rgbColorToCss } from "../../app/solidColor";
 import { isDesktopApiAvailable } from "../../ipc/api";
 
 export const MediaBin = () => {
@@ -123,7 +124,12 @@ export const MediaBin = () => {
             }}
           >
             <div className={`asset-thumb ${asset.variant ?? ""}`}>
-              {asset.kind === "audio" ? (
+              {asset.solidColor ? (
+                <div
+                  className="asset-solid-thumb"
+                  style={{ background: rgbColorToCss(asset.solidColor) }}
+                />
+              ) : asset.kind === "audio" ? (
                 <div className="audio-thumb">
                   <Music2 size={38} />
                 </div>

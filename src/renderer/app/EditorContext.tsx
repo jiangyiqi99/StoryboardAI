@@ -12,12 +12,18 @@ import {
 } from "./mediaImport";
 import type {
   EditorMediaAsset,
+  EditorRgbColor,
   EditorStoryBeat,
   EditorTimelineClip,
   EditorTimelineTrackId,
   ImportMediaResult
 } from "./editorTypes";
 import { desktopApi } from "../ipc/api";
+import {
+  normalizeRgbColor,
+  normalizeSolidDuration,
+  rgbColorToLabel
+} from "./solidColor";
 
 const TIMELINE_BASE_DURATION_SEC = 40;
 
@@ -26,6 +32,11 @@ export interface TimelinePreviewTarget {
   clip: EditorTimelineClip;
   sourceTime: number;
   timelineTime: number;
+}
+
+export interface SolidColorTimelineOptions {
+  color: EditorRgbColor;
+  durationSec: number;
 }
 
 interface EditorContextValue {
@@ -52,6 +63,10 @@ interface EditorContextValue {
     assetId: string,
     timelineStart?: number,
     targetTrackId?: EditorTimelineTrackId
+  ): void;
+  addSolidColorToTimeline(
+    options: SolidColorTimelineOptions,
+    timelineStart?: number
   ): void;
   moveClip(clipId: string, timelineStart: number): void;
   deleteClip(clipId?: string): void;
@@ -256,13 +271,12 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const durationSec = Math.max(asset.durationSec || (asset.kind === "image" ? 5 : 8), 0.2);
-      const nextStart = Math.max(0, timelineStart);
       const nextClipId = `clip-${crypto.randomUUID()}`;
       const nextClip: EditorTimelineClip = {
         id: nextClipId,
         assetId,
         trackId: asset.kind === "audio" ? resolveAudioTargetTrack(targetTrackId) : "video-1",
-        timelineStart: nextStart,
+        timelineStart: Math.max(0, timelineStart),
         durationSec,
         sourceIn: 0,
         sourceOut: durationSec
@@ -280,20 +294,71 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         nextClips.push(sourceAudioClip);
       }
 
-      setTimelineClips((current) => [...current, ...nextClips]);
+      const nextTimelineClips = insertClipGroupMagnetically(
+        timelineClips,
+        nextClips,
+        timelineStart
+      );
+      const insertedClipStart =
+        nextTimelineClips.find((clip) => clip.id === nextClip.id)?.timelineStart ?? 0;
+
+      setTimelineClips(nextTimelineClips);
       setSelectedClipId(nextClip.id);
       setSelectedAssetId(assetId);
-      setPlayheadSec(nextClip.timelineStart);
+      setPlayheadSec(insertedClipStart);
     },
-    [assets]
+    [assets, timelineClips]
+  );
+
+  const addSolidColorToTimeline = useCallback(
+    ({ color, durationSec }: SolidColorTimelineOptions, timelineStart = 0) => {
+      const normalizedColor = normalizeRgbColor(color);
+      const normalizedDuration = normalizeSolidDuration(durationSec);
+      const assetId = `asset-${crypto.randomUUID()}`;
+      const nextAsset: EditorMediaAsset = {
+        id: assetId,
+        name: `单色 ${rgbColorToLabel(normalizedColor)}`,
+        kind: "image",
+        durationSec: normalizedDuration,
+        width: 1920,
+        height: 1080,
+        imported: false,
+        variant: "solid-color",
+        solidColor: normalizedColor
+      };
+      const nextClip: EditorTimelineClip = {
+        id: createClipId(),
+        assetId,
+        trackId: "video-1",
+        timelineStart: Math.max(0, timelineStart),
+        durationSec: normalizedDuration,
+        sourceIn: 0,
+        sourceOut: normalizedDuration
+      };
+
+      setAssets((current) => [nextAsset, ...current]);
+      const nextTimelineClips = insertClipGroupMagnetically(
+        timelineClips,
+        [nextClip],
+        timelineStart
+      );
+      const insertedClipStart =
+        nextTimelineClips.find((clip) => clip.id === nextClip.id)?.timelineStart ?? 0;
+
+      setTimelineClips(nextTimelineClips);
+      setSelectedAssetId(assetId);
+      setSelectedClipId(nextClip.id);
+      setPlayheadSec(insertedClipStart);
+    },
+    [timelineClips]
   );
 
   const moveClip = useCallback((clipId: string, timelineStart: number) => {
     setTimelineClips((current) =>
-      moveLinkedClips(current, clipId, timelineStart, timelineDurationSec)
+      moveLinkedClipsMagnetically(current, clipId, timelineStart)
     );
     setSelectedClipId(clipId);
-  }, [timelineDurationSec]);
+  }, []);
 
   const deleteClip = useCallback(
     (clipId?: string) => {
@@ -306,7 +371,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       const removedClipIds = new Set([targetClip.id, linkedClip?.id].filter(Boolean));
 
       setTimelineClips((current) =>
-        current.filter((clip) => !removedClipIds.has(clip.id))
+        normalizeMagneticTimelineClips(
+          current.filter((clip) => !removedClipIds.has(clip.id))
+        )
       );
       setSelectedClipId(undefined);
       setSelectedAssetId(targetClip.assetId);
@@ -327,7 +394,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         return;
       }
 
-      setTimelineClips(splitResult.clips);
+      setTimelineClips(normalizeMagneticTimelineClips(splitResult.clips));
       setSelectedClipId(splitResult.selectedClipId);
       setSelectedAssetId(splitResult.selectedAssetId);
       setPlayheadSec(clampPlayhead(splitTime, timelineDurationSec));
@@ -376,6 +443,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       updateStoryBeat,
       moveStoryBeat,
       addAssetToTimeline,
+      addSolidColorToTimeline,
       moveClip,
       deleteClip,
       splitClip,
@@ -385,6 +453,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     }),
     [
       addAssetToTimeline,
+      addSolidColorToTimeline,
       activeTimelineAsset,
       activeTimelineClip,
       assets,
@@ -424,20 +493,6 @@ export const useEditor = (): EditorContextValue => {
 
   return context;
 };
-
-function clampTimelineStart(
-  timelineStart: number,
-  durationSec: number,
-  timelineDurationSec: number
-): number {
-  return Math.max(
-    0,
-    Math.min(
-      timelineDurationSec - Math.min(durationSec, timelineDurationSec),
-      timelineStart
-    )
-  );
-}
 
 function clampPlayhead(time: number, timelineDurationSec: number): number {
   return Math.max(0, Math.min(timelineDurationSec, time));
@@ -497,48 +552,185 @@ function resolveAudioTargetTrack(
   return targetTrackId === "voiceover-1" ? "voiceover-1" : "music-1";
 }
 
-function moveLinkedClips(
+function insertClipGroupMagnetically(
+  clips: EditorTimelineClip[],
+  insertedClips: EditorTimelineClip[],
+  timelineStart: number
+): EditorTimelineClip[] {
+  const videoClip = insertedClips.find((clip) => clip.trackId === "video-1");
+  if (videoClip) {
+    return normalizeMagneticTimelineClips([
+      ...insertClipsIntoTrackOrder(clips, "video-1", [videoClip], timelineStart),
+      ...insertedClips.filter((clip) => clip.id !== videoClip.id)
+    ]);
+  }
+
+  const [firstClip] = insertedClips;
+  if (!firstClip) {
+    return normalizeMagneticTimelineClips(clips);
+  }
+
+  return normalizeMagneticTimelineClips(
+    insertClipsIntoTrackOrder(clips, firstClip.trackId, insertedClips, timelineStart)
+  );
+}
+
+function moveLinkedClipsMagnetically(
   clips: EditorTimelineClip[],
   clipId: string,
-  timelineStart: number,
-  timelineDurationSec: number
+  timelineStart: number
 ): EditorTimelineClip[] {
   const targetClip = clips.find((clip) => clip.id === clipId);
   if (!targetClip) {
     return clips;
   }
 
-  const nextStart = clampTimelineStart(
-    timelineStart,
-    targetClip.durationSec,
-    timelineDurationSec
+  const linkedClip = findLinkedClip(clips, targetClip);
+  const primaryVideoClip =
+    targetClip.trackId === "video-1"
+      ? targetClip
+      : linkedClip?.trackId === "video-1"
+        ? linkedClip
+        : undefined;
+
+  if (primaryVideoClip) {
+    return normalizeMagneticTimelineClips(
+      moveClipWithinTrackOrder(clips, "video-1", primaryVideoClip.id, timelineStart)
+    );
+  }
+
+  return normalizeMagneticTimelineClips(
+    moveClipWithinTrackOrder(clips, targetClip.trackId, targetClip.id, timelineStart)
   );
-  const delta = nextStart - targetClip.timelineStart;
-  const linkedClipId = targetClip.linkedClipId;
+}
 
-  return clips.map((clip) => {
-    if (clip.id === clipId) {
-      return {
-        ...clip,
-        timelineStart: roundTimelineTime(nextStart)
-      };
+function normalizeMagneticTimelineClips(
+  clips: EditorTimelineClip[]
+): EditorTimelineClip[] {
+  let nextClips = normalizeTrackByOrder(clips, "video-1");
+  const videoClipStarts = new Map(
+    nextClips
+      .filter((clip) => clip.trackId === "video-1")
+      .map((clip) => [clip.id, clip.timelineStart])
+  );
+
+  nextClips = nextClips.map((clip) => {
+    if (clip.trackId !== "source-audio-1" || !clip.linkedClipId) {
+      return clip;
     }
 
-    if (linkedClipId && clip.id === linkedClipId) {
-      return {
-        ...clip,
-        timelineStart: roundTimelineTime(
-          clampTimelineStart(
-            clip.timelineStart + delta,
-            clip.durationSec,
-            timelineDurationSec
-          )
-        )
-      };
+    const linkedVideoStart = videoClipStarts.get(clip.linkedClipId);
+    if (linkedVideoStart === undefined) {
+      return clip;
     }
 
-    return clip;
+    return {
+      ...clip,
+      timelineStart: linkedVideoStart
+    };
   });
+
+  return normalizeTrackByOrder(
+    normalizeTrackByOrder(nextClips, "voiceover-1"),
+    "music-1"
+  );
+}
+
+function insertClipsIntoTrackOrder(
+  clips: EditorTimelineClip[],
+  trackId: EditorTimelineTrackId,
+  insertedClips: EditorTimelineClip[],
+  timelineStart: number
+): EditorTimelineClip[] {
+  const orderedTrackClips = getOrderedTrackClips(clips, trackId);
+  const insertIndex = getMagneticInsertionIndex(orderedTrackClips, timelineStart);
+  const nextTrackOrder = [
+    ...orderedTrackClips.slice(0, insertIndex),
+    ...insertedClips,
+    ...orderedTrackClips.slice(insertIndex)
+  ];
+
+  return replaceTrackOrder(clips, trackId, nextTrackOrder);
+}
+
+function moveClipWithinTrackOrder(
+  clips: EditorTimelineClip[],
+  trackId: EditorTimelineTrackId,
+  clipId: string,
+  timelineStart: number
+): EditorTimelineClip[] {
+  const targetClip = clips.find((clip) => clip.id === clipId);
+  if (!targetClip) {
+    return clips;
+  }
+
+  const orderedTrackClips = getOrderedTrackClips(clips, trackId).filter(
+    (clip) => clip.id !== clipId
+  );
+  const insertIndex = getMagneticInsertionIndex(orderedTrackClips, timelineStart);
+  const nextTrackOrder = [
+    ...orderedTrackClips.slice(0, insertIndex),
+    targetClip,
+    ...orderedTrackClips.slice(insertIndex)
+  ];
+
+  return replaceTrackOrder(clips, trackId, nextTrackOrder);
+}
+
+function normalizeTrackByOrder(
+  clips: EditorTimelineClip[],
+  trackId: EditorTimelineTrackId
+): EditorTimelineClip[] {
+  const orderedTrackClips = clips.filter((clip) => clip.trackId === trackId);
+  let timelineCursor = 0;
+  const updatedTrackClips = orderedTrackClips.map((clip) => {
+    const normalizedClip = {
+      ...clip,
+      timelineStart: roundTimelineTime(timelineCursor)
+    };
+    timelineCursor += clip.durationSec;
+    return normalizedClip;
+  });
+
+  return replaceTrackOrder(clips, trackId, updatedTrackClips);
+}
+
+function replaceTrackOrder(
+  clips: EditorTimelineClip[],
+  trackId: EditorTimelineTrackId,
+  orderedTrackClips: EditorTimelineClip[]
+): EditorTimelineClip[] {
+  return [
+    ...clips.filter((clip) => clip.trackId !== trackId),
+    ...orderedTrackClips
+  ];
+}
+
+function getOrderedTrackClips(
+  clips: EditorTimelineClip[],
+  trackId: EditorTimelineTrackId
+): EditorTimelineClip[] {
+  const originalOrder = new Map(clips.map((clip, index) => [clip.id, index]));
+
+  return clips
+    .filter((clip) => clip.trackId === trackId)
+    .sort(
+      (firstClip, secondClip) =>
+        firstClip.timelineStart - secondClip.timelineStart ||
+        (originalOrder.get(firstClip.id) ?? 0) - (originalOrder.get(secondClip.id) ?? 0)
+    );
+}
+
+function getMagneticInsertionIndex(
+  orderedTrackClips: EditorTimelineClip[],
+  timelineStart: number
+): number {
+  const targetStart = Math.max(0, timelineStart);
+  const insertIndex = orderedTrackClips.findIndex(
+    (clip) => targetStart < clip.timelineStart + clip.durationSec / 2
+  );
+
+  return insertIndex === -1 ? orderedTrackClips.length : insertIndex;
 }
 
 interface SplitTimelineResult {

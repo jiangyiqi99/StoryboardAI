@@ -12,6 +12,7 @@ import {
   ExportDialog,
   type ExportSettings
 } from "../components/export";
+import { AIAssetsPanel } from "../components/ai-assets";
 import { Inspector } from "../components/inspector";
 import { MediaBin } from "../components/media-bin";
 import { Preview } from "../components/preview";
@@ -101,7 +102,13 @@ export const App = () => {
 
           <section className="workspace-grid">
             <aside className="left-stack">
-              {activeTool === "story-script" ? <StoryScriptPanel /> : <MediaBin />}
+              {activeTool === "story-script" ? (
+                <StoryScriptPanel />
+              ) : activeTool === "assets" ? (
+                <AIAssetsPanel />
+              ) : (
+                <MediaBin />
+              )}
             </aside>
             <section className="center-stack">
               <Preview />

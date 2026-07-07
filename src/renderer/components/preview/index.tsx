@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditor } from "../../app/EditorContext";
 import { formatTimecode } from "../../app/mediaImport";
+import { rgbColorToCss } from "../../app/solidColor";
 
 export const Preview = () => {
   const {
@@ -161,7 +162,9 @@ export const Preview = () => {
     () => 1 / (timelineFps ?? previewAsset?.fps ?? 24),
     [previewAsset?.fps, timelineFps]
   );
-  const displayImage = previewAsset?.thumbnailUrl ?? previewAsset?.fileUrl ?? previewAsset?.objectUrl;
+  const displayImage = previewAsset?.solidColor
+    ? undefined
+    : previewAsset?.thumbnailUrl ?? previewAsset?.fileUrl ?? previewAsset?.objectUrl;
 
   return (
     <section className="panel preview-panel" data-panel="preview">
@@ -194,6 +197,11 @@ export const Preview = () => {
             poster={previewAsset?.thumbnailUrl}
             ref={videoRef}
             src={mediaUrl}
+          />
+        ) : previewAsset?.solidColor ? (
+          <div
+            className="viewer-solid-color"
+            style={{ background: rgbColorToCss(previewAsset.solidColor) }}
           />
         ) : displayImage ? (
           <img alt="素材预览画面" src={displayImage} />

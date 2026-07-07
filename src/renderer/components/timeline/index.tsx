@@ -9,12 +9,31 @@ import {
   Trash2,
   Volume2,
   WandSparkles,
+  X,
   ZoomIn
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type FormEvent,
+  type PointerEvent
+} from "react";
 import { useEditor } from "../../app/EditorContext";
-import type { EditorTimelineClip, EditorTimelineTrackId } from "../../app/editorTypes";
+import type {
+  EditorRgbColor,
+  EditorTimelineClip,
+  EditorTimelineTrackId
+} from "../../app/editorTypes";
 import { formatFps, formatTimecode } from "../../app/mediaImport";
+import {
+  DEFAULT_SOLID_COLOR,
+  normalizeRgbColor,
+  normalizeSolidDuration,
+  rgbColorToCss
+} from "../../app/solidColor";
 import { desktopApi } from "../../ipc/api";
 
 const trackLabels = [
@@ -29,6 +48,7 @@ interface HoverPreview {
   x: number;
   assetName?: string;
   frameUrl?: string;
+  solidColor?: EditorRgbColor;
   sourceTime?: number;
   sourceFps?: number;
   loading?: boolean;
@@ -40,9 +60,15 @@ interface ClipDragState {
   pointerId: number;
 }
 
+interface PendingSolidDrop {
+  timelineStart: number;
+  durationSec: number;
+}
+
 export const Timeline = () => {
   const {
     addAssetToTimeline,
+    addSolidColorToTimeline,
     assets,
     deleteClip,
     playheadSec,
@@ -62,6 +88,7 @@ export const Timeline = () => {
   const [dragState, setDragState] = useState<ClipDragState | null>(null);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [hoverPreview, setHoverPreview] = useState<HoverPreview | null>(null);
+  const [pendingSolidDrop, setPendingSolidDrop] = useState<PendingSolidDrop | null>(null);
 
   const markers = useMemo(
     () =>
@@ -133,6 +160,15 @@ export const Timeline = () => {
     const dropTime = getTimeFromClientX(event.clientX);
     const assetId = event.dataTransfer.getData("application/x-aiv-asset-id");
     const clipId = event.dataTransfer.getData("application/x-aiv-clip-id");
+    const aiMaterial = event.dataTransfer.getData("application/x-aiv-ai-material");
+
+    if (aiMaterial === "solid-color") {
+      const durationSec = normalizeSolidDuration(
+        Number(event.dataTransfer.getData("application/x-aiv-solid-duration"))
+      );
+      setPendingSolidDrop({ timelineStart: dropTime, durationSec });
+      return;
+    }
 
     if (clipId) {
       moveClip(clipId, dropTime);
@@ -159,6 +195,24 @@ export const Timeline = () => {
     }
 
     splitClip(splitCandidate.id, playheadSec);
+  };
+
+  const handleSolidColorConfirm = (
+    color: EditorRgbColor,
+    durationSec: number
+  ) => {
+    if (!pendingSolidDrop) {
+      return;
+    }
+
+    addSolidColorToTimeline(
+      {
+        color,
+        durationSec
+      },
+      pendingSolidDrop.timelineStart
+    );
+    setPendingSolidDrop(null);
   };
 
   const handleClipPointerDown = (
@@ -279,10 +333,11 @@ export const Timeline = () => {
       return;
     }
 
-    const fallbackFrame =
-      previewTarget.asset.thumbnailUrl ??
-      previewTarget.asset.fileUrl ??
-      previewTarget.asset.objectUrl;
+    const fallbackFrame = previewTarget.asset.solidColor
+      ? undefined
+      : previewTarget.asset.thumbnailUrl ??
+        previewTarget.asset.fileUrl ??
+        previewTarget.asset.objectUrl;
     const shouldExtractFrame =
       previewTarget.asset.kind === "video" && Boolean(previewTarget.asset.absolutePath);
 
@@ -292,6 +347,7 @@ export const Timeline = () => {
             ...current,
             assetName: previewTarget.asset.name,
             frameUrl: fallbackFrame,
+            solidColor: previewTarget.asset.solidColor,
             sourceTime: previewTarget.sourceTime,
             sourceFps: previewTarget.asset.fps,
             loading: shouldExtractFrame
@@ -436,7 +492,14 @@ export const Timeline = () => {
                 left: `${hoverPreview.x}px`
               }}
             >
-              <div className="timeline-hover-thumb">
+              <div
+                className="timeline-hover-thumb"
+                style={
+                  hoverPreview.solidColor
+                    ? { background: rgbColorToCss(hoverPreview.solidColor) }
+                    : undefined
+                }
+              >
                 {hoverPreview.frameUrl ? <img alt="" src={hoverPreview.frameUrl} /> : null}
               </div>
               <div className="timeline-hover-meta">
@@ -454,10 +517,13 @@ export const Timeline = () => {
           <div className="track-row video-row">
             {videoClips.map((clip) => {
               const asset = assets.find((candidate) => candidate.id === clip.assetId);
-              const thumbnailUrl = asset?.thumbnailUrl ?? asset?.objectUrl;
+              const thumbnailUrl = asset?.solidColor
+                ? undefined
+                : asset?.thumbnailUrl ?? asset?.objectUrl;
               const className = [
                 "timeline-clip",
                 "video",
+                asset?.variant === "solid-color" ? "solid-color" : "",
                 clip.id === selectedClipId ? "selected" : "",
                 dragState?.clipId === clip.id ? "is-dragging" : ""
               ]
@@ -478,6 +544,11 @@ export const Timeline = () => {
                 >
                   {thumbnailUrl ? (
                     <img alt="" draggable={false} src={thumbnailUrl} />
+                  ) : asset?.solidColor ? (
+                    <div
+                      className="timeline-clip-solid-thumb"
+                      style={{ background: rgbColorToCss(asset.solidColor) }}
+                    />
                   ) : (
                     <div className="timeline-clip-empty-thumb" />
                   )}
@@ -534,9 +605,107 @@ export const Timeline = () => {
 
         </div>
       </div>
+      {pendingSolidDrop ? (
+        <SolidColorDropDialog
+          initialDurationSec={pendingSolidDrop.durationSec}
+          onCancel={() => setPendingSolidDrop(null)}
+          onConfirm={handleSolidColorConfirm}
+        />
+      ) : null}
     </section>
   );
 };
+
+function SolidColorDropDialog({
+  initialDurationSec,
+  onCancel,
+  onConfirm
+}: {
+  initialDurationSec: number;
+  onCancel(): void;
+  onConfirm(color: EditorRgbColor, durationSec: number): void;
+}) {
+  const [color, setColor] = useState<EditorRgbColor>(DEFAULT_SOLID_COLOR);
+  const [durationSec, setDurationSec] = useState(initialDurationSec);
+  const normalizedColor = normalizeRgbColor(color);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    onConfirm(normalizedColor, normalizeSolidDuration(durationSec));
+  };
+
+  const updateChannel = (channel: keyof EditorRgbColor, value: number) => {
+    setColor((current) => ({
+      ...current,
+      [channel]: value
+    }));
+  };
+
+  return (
+    <div
+      className="modal-backdrop solid-color-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onCancel();
+        }
+      }}
+    >
+      <form className="export-dialog solid-color-dialog" onSubmit={handleSubmit}>
+        <div className="export-dialog-head">
+          <div>
+            <h2>单色素材</h2>
+            <p>RGB 颜色</p>
+          </div>
+          <button className="icon-button" onClick={onCancel} title="关闭" type="button">
+            <X size={17} />
+          </button>
+        </div>
+
+        <div className="solid-color-picker">
+          <div
+            className="solid-color-preview"
+            style={{ background: rgbColorToCss(normalizedColor) }}
+          />
+          <div className="rgb-field-grid">
+            {(["r", "g", "b"] as const).map((channel) => (
+              <label className="field-stack" key={channel}>
+                <span>{channel.toUpperCase()}</span>
+                <input
+                  max="255"
+                  min="0"
+                  onChange={(event) => updateChannel(channel, Number(event.currentTarget.value))}
+                  step="1"
+                  type="number"
+                  value={color[channel]}
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <label className="field-stack">
+          <span>时长</span>
+          <input
+            min="0.2"
+            onChange={(event) => setDurationSec(Number(event.currentTarget.value))}
+            step="0.1"
+            type="number"
+            value={durationSec}
+          />
+        </label>
+
+        <div className="export-dialog-actions">
+          <button className="ghost-button compact" onClick={onCancel} type="button">
+            取消
+          </button>
+          <button className="primary-button compact" type="submit">
+            添加
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
 
 function canSplitClipAtTime(clip: EditorTimelineClip, splitTime: number): boolean {
   const minimumSegmentDuration = 0.1;

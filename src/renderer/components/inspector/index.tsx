@@ -1,5 +1,6 @@
 import { useEditor } from "../../app/EditorContext";
 import { formatDuration, formatFps, formatTimecode } from "../../app/mediaImport";
+import { rgbColorToLabel } from "../../app/solidColor";
 
 export const Inspector = () => {
   const { selectedAsset, selectedClip } = useEditor();
@@ -9,7 +10,9 @@ export const Inspector = () => {
     [
       "类型",
       selectedAsset
-        ? selectedAsset.kind === "audio"
+        ? selectedAsset.solidColor
+          ? "单色"
+          : selectedAsset.kind === "audio"
           ? "音频"
           : selectedAsset.kind === "image"
             ? "图片"
@@ -17,7 +20,16 @@ export const Inspector = () => {
         : "未选择"
     ],
     ["时长", selectedAsset ? formatTimecode(selectedAsset.durationSec, assetFps) : "00:00:00:00"],
-    ["源文件", selectedAsset ? (selectedAsset.imported ? "本地导入" : "示例素材") : "未选择"],
+    [
+      "源文件",
+      selectedAsset
+        ? selectedAsset.solidColor
+          ? "AI 内置素材"
+          : selectedAsset.imported
+            ? "本地导入"
+            : "示例素材"
+        : "未选择"
+    ],
     [
       "分辨率",
       selectedAsset?.width && selectedAsset.height
@@ -55,7 +67,13 @@ export const Inspector = () => {
         <dl className="property-list">
           <div className="property-block">
             <dt>提示词</dt>
-            <dd>{selectedAsset ? "本地导入素材" : "未选择素材"}</dd>
+            <dd>
+              {selectedAsset?.solidColor
+                ? rgbColorToLabel(selectedAsset.solidColor)
+                : selectedAsset
+                  ? "本地导入素材"
+                  : "未选择素材"}
+            </dd>
           </div>
           <div>
             <dt>模型</dt>
