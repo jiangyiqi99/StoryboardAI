@@ -12,7 +12,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEditor } from "../../app/EditorContext";
 import { formatTimecode } from "../../app/mediaImport";
-import { previewImage } from "../../app/mockWorkspace";
 
 export const Preview = () => {
   const {
@@ -20,18 +19,21 @@ export const Preview = () => {
     resolveTimelinePreview,
     selectedAsset,
     setPlayhead,
-    timelineDurationSec
+    timelineClips,
+    timelineDurationSec,
+    timelineFps
   } = useEditor();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const timelinePreview = resolveTimelinePreview(playheadSec);
-  const previewAsset = timelinePreview?.asset ?? selectedAsset;
+  const hasTimelineClips = timelineClips.length > 0;
+  const previewAsset = timelinePreview?.asset ?? (hasTimelineClips ? undefined : selectedAsset);
   const mediaUrl = previewAsset?.fileUrl ?? previewAsset?.objectUrl;
   const canPlayVideo = previewAsset?.kind === "video" && Boolean(mediaUrl);
   const sourceTime = timelinePreview?.sourceTime ?? currentTime;
   const sourceKey = `${previewAsset?.id ?? "empty"}:${timelinePreview?.clip.id ?? "asset"}`;
-  const displayTime = timelinePreview ? playheadSec : currentTime;
+  const displayTime = hasTimelineClips ? playheadSec : currentTime;
 
   const seekVideo = useCallback((time: number) => {
     const video = videoRef.current;
@@ -117,7 +119,7 @@ export const Preview = () => {
 
   const handlePlay = async () => {
     const video = videoRef.current;
-    if (!video) {
+    if (!video || !canPlayVideo) {
       return;
     }
 
@@ -140,7 +142,7 @@ export const Preview = () => {
   };
 
   const seekBy = (delta: number) => {
-    if (timelinePreview) {
+    if (hasTimelineClips) {
       setPlayhead(Math.max(0, Math.min(timelineDurationSec, playheadSec + delta)));
       return;
     }
@@ -155,8 +157,11 @@ export const Preview = () => {
     setCurrentTime(nextTime);
   };
 
-  const frameStep = useMemo(() => 1 / (previewAsset?.fps ?? 24), [previewAsset?.fps]);
-  const displayImage = previewAsset?.thumbnailUrl ?? previewAsset?.fileUrl ?? previewAsset?.objectUrl ?? previewImage;
+  const frameStep = useMemo(
+    () => 1 / (timelineFps ?? previewAsset?.fps ?? 24),
+    [previewAsset?.fps, timelineFps]
+  );
+  const displayImage = previewAsset?.thumbnailUrl ?? previewAsset?.fileUrl ?? previewAsset?.objectUrl;
 
   return (
     <section className="panel preview-panel" data-panel="preview">
@@ -170,9 +175,6 @@ export const Preview = () => {
           <button className="select-button" type="button">1/4</button>
           <button className="icon-button" title="截图" type="button">
             <Camera size={17} />
-          </button>
-          <button className="icon-button" title="全屏" type="button">
-            <Maximize2 size={17} />
           </button>
         </div>
       </div>
@@ -189,16 +191,16 @@ export const Preview = () => {
             ref={videoRef}
             src={mediaUrl}
           />
+        ) : displayImage ? (
+          <img alt="素材预览画面" src={displayImage} />
         ) : (
-          <img alt="未来城市预览画面" src={displayImage} />
+          <div className="viewer-empty" />
         )}
-        <div className="viewer-label">
-          {previewAsset?.name ?? "未选择素材"}
-        </div>
+        {previewAsset ? <div className="viewer-label">{previewAsset.name}</div> : null}
       </div>
 
       <div className="transport">
-        <time>{formatTimecode(displayTime)}</time>
+        <time>{formatTimecode(displayTime, timelineFps ?? previewAsset?.fps)}</time>
         <div className="transport-buttons">
           <button className="icon-button" onClick={() => seekBy(-frameStep)} title="上一帧" type="button">
             <SkipBack size={18} />

@@ -14,8 +14,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent } from "react";
 import { useEditor } from "../../app/EditorContext";
 import type { EditorTimelineClip, EditorTimelineTrackId } from "../../app/editorTypes";
-import { formatTimecode } from "../../app/mediaImport";
-import { previewImage } from "../../app/mockWorkspace";
+import { formatFps, formatTimecode } from "../../app/mediaImport";
 import { desktopApi } from "../../ipc/api";
 
 const trackLabels = [
@@ -31,33 +30,45 @@ interface HoverPreview {
   assetName?: string;
   frameUrl?: string;
   sourceTime?: number;
+  sourceFps?: number;
   loading?: boolean;
+}
+
+interface ClipDragState {
+  clipId: string;
+  grabOffsetSec: number;
+  pointerId: number;
 }
 
 export const Timeline = () => {
   const {
     addAssetToTimeline,
     assets,
+    deleteClip,
     playheadSec,
     resolveTimelinePreview,
     moveClip,
     selectClip,
+    selectedClip,
     selectedClipId,
     setPlayhead,
+    splitClip,
     timelineClips,
-    timelineDurationSec
+    timelineDurationSec,
+    timelineFps
   } = useEditor();
   const canvasRef = useRef<HTMLDivElement>(null);
   const latestFrameRequest = useRef(0);
+  const [dragState, setDragState] = useState<ClipDragState | null>(null);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [hoverPreview, setHoverPreview] = useState<HoverPreview | null>(null);
 
   const markers = useMemo(
     () =>
       Array.from({ length: 8 }, (_marker, index) =>
-        formatTimecode((timelineDurationSec / 7) * index)
+        formatTimecode((timelineDurationSec / 7) * index, timelineFps)
       ),
-    [timelineDurationSec]
+    [timelineDurationSec, timelineFps]
   );
 
   const getTimeFromClientX = (clientX: number): number => {
@@ -95,9 +106,26 @@ export const Timeline = () => {
     return trackLabels[rowIndex]?.id ?? "music-1";
   };
 
+  const splitCandidate = useMemo(() => {
+    if (selectedClip && canSplitClipAtTime(selectedClip, playheadSec)) {
+      return selectedClip;
+    }
+
+    const previewClip = resolveTimelinePreview(playheadSec)?.clip;
+    if (previewClip && canSplitClipAtTime(previewClip, playheadSec)) {
+      return previewClip;
+    }
+
+    return timelineClips.find((clip) => canSplitClipAtTime(clip, playheadSec));
+  }, [playheadSec, resolveTimelinePreview, selectedClip, timelineClips]);
+
+  const canDeleteClip = Boolean(selectedClipId);
+
   const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
+    event.dataTransfer.dropEffect = event.dataTransfer.types.includes("application/x-aiv-clip-id")
+      ? "move"
+      : "copy";
   };
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -114,6 +142,71 @@ export const Timeline = () => {
 
     if (assetId) {
       addAssetToTimeline(assetId, dropTime, getDropTrackId(event.clientY));
+    }
+  };
+
+  const handleDeleteClick = () => {
+    if (!selectedClipId) {
+      return;
+    }
+
+    deleteClip(selectedClipId);
+  };
+
+  const handleSplitClick = () => {
+    if (!splitCandidate) {
+      return;
+    }
+
+    splitClip(splitCandidate.id, playheadSec);
+  };
+
+  const handleClipPointerDown = (
+    clip: EditorTimelineClip,
+    event: PointerEvent<HTMLDivElement>
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const pointerTime = getTimeFromClientX(event.clientX);
+    const grabOffsetSec = Math.max(
+      0,
+      Math.min(clip.durationSec, pointerTime - clip.timelineStart)
+    );
+
+    event.stopPropagation();
+    selectClip(clip.id);
+    setHoverPreview(null);
+    setIsScrubbing(false);
+    setDragState({
+      clipId: clip.id,
+      grabOffsetSec,
+      pointerId: event.pointerId
+    });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handleClipPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.stopPropagation();
+    const nextStart = getTimeFromClientX(event.clientX) - dragState.grabOffsetSec;
+    moveClip(dragState.clipId, nextStart);
+    setPlayhead(Math.max(0, nextStart));
+  };
+
+  const handleClipPointerUp = (event: PointerEvent<HTMLDivElement>) => {
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.stopPropagation();
+    setDragState(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
     }
   };
 
@@ -150,6 +243,25 @@ export const Timeline = () => {
   };
 
   useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        isEditableTarget(event.target) ||
+        !selectedClipId ||
+        (event.key !== "Delete" && event.key !== "Backspace")
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      deleteClip(selectedClipId);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [deleteClip, selectedClipId]);
+
+  useEffect(() => {
     if (!hoverPreview) {
       return;
     }
@@ -170,8 +282,7 @@ export const Timeline = () => {
     const fallbackFrame =
       previewTarget.asset.thumbnailUrl ??
       previewTarget.asset.fileUrl ??
-      previewTarget.asset.objectUrl ??
-      previewImage;
+      previewTarget.asset.objectUrl;
     const shouldExtractFrame =
       previewTarget.asset.kind === "video" && Boolean(previewTarget.asset.absolutePath);
 
@@ -182,6 +293,7 @@ export const Timeline = () => {
             assetName: previewTarget.asset.name,
             frameUrl: fallbackFrame,
             sourceTime: previewTarget.sourceTime,
+            sourceFps: previewTarget.asset.fps,
             loading: shouldExtractFrame
           }
         : current
@@ -242,22 +354,34 @@ export const Timeline = () => {
     <section className="timeline-panel" data-panel="timeline">
       <div className="timeline-toolbar">
         <div className="timeline-toolset">
-          <button className="icon-button is-active" title="选择" type="button">
+          <button className="icon-button is-active" title="选择工具" type="button">
             <MousePointer2 size={17} />
           </button>
-          <button className="icon-button" title="钢笔" type="button">
+          <button className="icon-button is-muted" disabled title="AI 工具即将接入" type="button">
             <WandSparkles size={17} />
           </button>
-          <button className="icon-button" title="链接" type="button">
+          <button className="icon-button is-muted" disabled title="轨道设置即将接入" type="button">
             <Settings2 size={17} />
           </button>
-          <button className="icon-button" title="剪刀" type="button">
+          <button
+            className={splitCandidate ? "icon-button" : "icon-button is-muted"}
+            disabled={!splitCandidate}
+            onClick={handleSplitClick}
+            title={splitCandidate ? "剪切当前片段" : "将播放头移动到片段内部后剪切"}
+            type="button"
+          >
             <Scissors size={17} />
           </button>
-          <button className="icon-button" title="文本" type="button">
+          <button className="icon-button is-muted" disabled title="文本工具即将接入" type="button">
             <Text size={17} />
           </button>
-          <button className="icon-button" title="删除" type="button">
+          <button
+            className={canDeleteClip ? "icon-button" : "icon-button is-muted"}
+            disabled={!canDeleteClip}
+            onClick={handleDeleteClick}
+            title={canDeleteClip ? "删除选中片段" : "先选择一个片段"}
+            type="button"
+          >
             <Trash2 size={17} />
           </button>
         </div>
@@ -277,15 +401,16 @@ export const Timeline = () => {
               {id === "video-1" ? <Settings2 size={14} /> : <Volume2 size={14} />}
             </div>
           ))}
-          <div className="fps-label">项目帧率：24 fps</div>
+          <div className="fps-label">项目帧率：{formatFps(timelineFps)}</div>
         </aside>
         <div
           className="timeline-canvas"
           onDragOver={handleDragOver}
           onDrop={handleDrop}
+          onPointerCancel={handlePointerUp}
           onPointerDown={handlePointerDown}
           onPointerLeave={() => {
-            if (!isScrubbing) {
+            if (!isScrubbing && !dragState) {
               setHoverPreview(null);
             }
           }}
@@ -317,9 +442,9 @@ export const Timeline = () => {
               <div className="timeline-hover-meta">
                 <strong>{hoverPreview.assetName ?? "空白时间线"}</strong>
                 <time>
-                  {formatTimecode(hoverPreview.time)}
+                  {formatTimecode(hoverPreview.time, timelineFps)}
                   {hoverPreview.sourceTime !== undefined
-                    ? ` · ${formatTimecode(hoverPreview.sourceTime)}`
+                    ? ` · ${formatTimecode(hoverPreview.sourceTime, hoverPreview.sourceFps)}`
                     : ""}
                 </time>
               </div>
@@ -329,42 +454,81 @@ export const Timeline = () => {
           <div className="track-row video-row">
             {videoClips.map((clip) => {
               const asset = assets.find((candidate) => candidate.id === clip.assetId);
+              const thumbnailUrl = asset?.thumbnailUrl ?? asset?.objectUrl;
+              const className = [
+                "timeline-clip",
+                "video",
+                clip.id === selectedClipId ? "selected" : "",
+                dragState?.clipId === clip.id ? "is-dragging" : ""
+              ]
+                .filter(Boolean)
+                .join(" ");
               return (
-              <div
-                className={
-                  clip.id === selectedClipId ? "timeline-clip video selected" : "timeline-clip video"
-                }
-                draggable
-                key={clip.id}
-                onClick={() => selectClip(clip.id)}
-                onDragStart={(event) => {
-                  event.dataTransfer.setData("application/x-aiv-clip-id", clip.id);
-                  event.dataTransfer.effectAllowed = "move";
-                }}
-                style={{
-                  left: `${(clip.timelineStart / timelineDurationSec) * 100}%`,
-                  width: `${(clip.durationSec / timelineDurationSec) * 100}%`
-                }}
-              >
-                <img alt="" src={asset?.thumbnailUrl ?? asset?.objectUrl ?? previewImage} />
-                <span>{asset?.name ?? "未命名素材"}</span>
-              </div>
+                <div
+                  className={className}
+                  key={clip.id}
+                  onPointerCancel={handleClipPointerUp}
+                  onPointerDown={(event) => handleClipPointerDown(clip, event)}
+                  onPointerMove={handleClipPointerMove}
+                  onPointerUp={handleClipPointerUp}
+                  style={{
+                    left: `${(clip.timelineStart / timelineDurationSec) * 100}%`,
+                    width: `${(clip.durationSec / timelineDurationSec) * 100}%`
+                  }}
+                >
+                  {thumbnailUrl ? (
+                    <img alt="" draggable={false} src={thumbnailUrl} />
+                  ) : (
+                    <div className="timeline-clip-empty-thumb" />
+                  )}
+                  <span>{asset?.name ?? "未命名素材"}</span>
+                </div>
               );
             })}
           </div>
           <div className="track-row audio-row">
             {sourceAudioClips.map((clip) =>
-              renderAudioClip(clip, "source", assets, selectedClipId, selectClip, timelineDurationSec)
+              renderAudioClip(
+                clip,
+                "source",
+                assets,
+                selectedClipId,
+                dragState?.clipId,
+                timelineDurationSec,
+                handleClipPointerDown,
+                handleClipPointerMove,
+                handleClipPointerUp
+              )
             )}
           </div>
           <div className="track-row audio-row">
             {voiceoverClips.map((clip) =>
-              renderAudioClip(clip, "voiceover", assets, selectedClipId, selectClip, timelineDurationSec)
+              renderAudioClip(
+                clip,
+                "voiceover",
+                assets,
+                selectedClipId,
+                dragState?.clipId,
+                timelineDurationSec,
+                handleClipPointerDown,
+                handleClipPointerMove,
+                handleClipPointerUp
+              )
             )}
           </div>
           <div className="track-row audio-row">
             {musicClips.map((clip) =>
-              renderAudioClip(clip, "music", assets, selectedClipId, selectClip, timelineDurationSec)
+              renderAudioClip(
+                clip,
+                "music",
+                assets,
+                selectedClipId,
+                dragState?.clipId,
+                timelineDurationSec,
+                handleClipPointerDown,
+                handleClipPointerMove,
+                handleClipPointerUp
+              )
             )}
           </div>
 
@@ -374,27 +538,58 @@ export const Timeline = () => {
   );
 };
 
+function canSplitClipAtTime(clip: EditorTimelineClip, splitTime: number): boolean {
+  const minimumSegmentDuration = 0.1;
+  const clipStart = clip.timelineStart;
+  const clipEnd = clip.timelineStart + clip.durationSec;
+
+  return (
+    splitTime > clipStart + minimumSegmentDuration &&
+    splitTime < clipEnd - minimumSegmentDuration
+  );
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLElement &&
+    Boolean(target.closest("input, textarea, [contenteditable='true']"))
+  );
+}
+
 function renderAudioClip(
   clip: EditorTimelineClip,
   tone: "source" | "voiceover" | "music",
   assets: ReturnType<typeof useEditor>["assets"],
   selectedClipId: string | undefined,
-  selectClip: ReturnType<typeof useEditor>["selectClip"],
-  timelineDurationSec: number
+  draggingClipId: string | undefined,
+  timelineDurationSec: number,
+  onClipPointerDown: (
+    clip: EditorTimelineClip,
+    event: PointerEvent<HTMLDivElement>
+  ) => void,
+  onClipPointerMove: (event: PointerEvent<HTMLDivElement>) => void,
+  onClipPointerUp: (event: PointerEvent<HTMLDivElement>) => void
 ) {
   const asset = assets.find((candidate) => candidate.id === clip.assetId);
   const Icon = tone === "voiceover" ? Mic2 : Music2;
+  const className = [
+    "timeline-clip",
+    "audio",
+    tone,
+    clip.id === selectedClipId ? "selected" : "",
+    clip.id === draggingClipId ? "is-dragging" : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <div
-      className={`timeline-clip audio ${tone} ${clip.id === selectedClipId ? "selected" : ""}`}
-      draggable
+      className={className}
       key={clip.id}
-      onClick={() => selectClip(clip.id)}
-      onDragStart={(event) => {
-        event.dataTransfer.setData("application/x-aiv-clip-id", clip.id);
-        event.dataTransfer.effectAllowed = "move";
-      }}
+      onPointerCancel={onClipPointerUp}
+      onPointerDown={(event) => onClipPointerDown(clip, event)}
+      onPointerMove={onClipPointerMove}
+      onPointerUp={onClipPointerUp}
       style={{
         left: `${(clip.timelineStart / timelineDurationSec) * 100}%`,
         width: `${(clip.durationSec / timelineDurationSec) * 100}%`

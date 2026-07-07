@@ -6,7 +6,6 @@ import {
   useMemo,
   useState
 } from "react";
-import { mediaAssets, timelineAudioClips, timelineVideoClips } from "./mockWorkspace";
 import {
   createEditorAssetFromFile,
   createEditorAssetFromImportedFile
@@ -34,6 +33,7 @@ interface EditorContextValue {
   selectedAssetId?: string;
   selectedClipId?: string;
   timelineDurationSec: number;
+  timelineFps?: number;
   playheadSec: number;
   selectedAsset?: EditorMediaAsset;
   selectedClip?: EditorTimelineClip;
@@ -50,6 +50,8 @@ interface EditorContextValue {
     targetTrackId?: EditorTimelineTrackId
   ): void;
   moveClip(clipId: string, timelineStart: number): void;
+  deleteClip(clipId?: string): void;
+  splitClip(clipId: string | undefined, splitTime: number): void;
   setPlayhead(time: number): void;
   nudgePlayhead(delta: number): void;
   resolveTimelinePreview(time: number): TimelinePreviewTarget | undefined;
@@ -57,80 +59,16 @@ interface EditorContextValue {
 
 const EditorContext = createContext<EditorContextValue | null>(null);
 
-const initialAssets: EditorMediaAsset[] = mediaAssets.map((asset) => ({
-  id: asset.id,
-  name: asset.name,
-  kind: asset.kind,
-  durationSec: asset.duration ? parseDurationText(asset.duration) : asset.kind === "image" ? 5 : 8,
-  thumbnailUrl: asset.thumbnail,
-  imported: false,
-  variant: asset.variant
-}));
-
-const initialVideoTrackClips: EditorTimelineClip[] = timelineVideoClips.map((clip, index) => {
-  const durationSec = Math.max(
-    2,
-    Math.round((clip.width / 100) * TIMELINE_BASE_DURATION_SEC * 10) / 10
-  );
-
-  return {
-    id: `clip-video-${index + 1}`,
-    assetId: resolveInitialAssetId(index),
-    trackId: "video-1",
-    timelineStart: Math.round((clip.left / 100) * TIMELINE_BASE_DURATION_SEC * 10) / 10,
-    durationSec,
-    sourceIn: 0,
-    sourceOut: durationSec
-  };
-});
-
-const initialSourceAudioClips: EditorTimelineClip[] = initialVideoTrackClips
-  .filter((clip) => {
-    const asset = initialAssets.find((candidate) => candidate.id === clip.assetId);
-    return asset?.kind === "video";
-  })
-  .map((clip) => ({
-    ...clip,
-    id: clip.id.replace("clip-video", "clip-source-audio"),
-    trackId: "source-audio-1",
-    linkedClipId: clip.id
-  }));
-
-initialVideoTrackClips.forEach((clip) => {
-  const linkedClip = initialSourceAudioClips.find((candidate) => candidate.linkedClipId === clip.id);
-  if (linkedClip) {
-    clip.linkedClipId = linkedClip.id;
-  }
-});
-
-const initialTimelineClips: EditorTimelineClip[] = [
-  ...initialVideoTrackClips,
-  ...initialSourceAudioClips,
-  ...timelineAudioClips.map((clip, index) => {
-    const durationSec = Math.max(
-      2,
-      Math.round((clip.width / 100) * TIMELINE_BASE_DURATION_SEC * 10) / 10
-    );
-
-    return {
-      id: `clip-audio-${index + 1}`,
-      assetId: index === 0 ? "audio" : "voiceover",
-      trackId: index === 0 ? "music-1" : "voiceover-1",
-      timelineStart: Math.round((clip.left / 100) * TIMELINE_BASE_DURATION_SEC * 10) / 10,
-      durationSec,
-      sourceIn: 0,
-      sourceOut: durationSec
-    };
-  })
-];
+const initialAssets: EditorMediaAsset[] = [];
+const initialTimelineClips: EditorTimelineClip[] = [];
 
 export const EditorProvider = ({ children }: { children: ReactNode }) => {
   const [assets, setAssets] = useState<EditorMediaAsset[]>(initialAssets);
   const [timelineClips, setTimelineClips] =
     useState<EditorTimelineClip[]>(initialTimelineClips);
-  const [selectedAssetId, setSelectedAssetId] = useState<string>("shot-01");
-  const [selectedClipId, setSelectedClipId] = useState<string>("clip-video-4");
-  const [playheadSec, setPlayheadSec] = useState<number>(15.2);
+  const [selectedAssetId, setSelectedAssetId] = useState<string | undefined>();
+  const [selectedClipId, setSelectedClipId] = useState<string | undefined>();
+  const [playheadSec, setPlayheadSec] = useState<number>(0);
 
   const timelineDurationSec = useMemo(() => {
     const clipEnd = timelineClips.reduce(
@@ -151,6 +89,10 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
   );
   const activeTimelineClip = activeTimelinePreview?.clip;
   const activeTimelineAsset = activeTimelinePreview?.asset;
+  const timelineFps =
+    activeTimelineAsset?.fps ??
+    resolveFirstTimelineVideoFps(timelineClips, assets) ??
+    selectedAsset?.fps;
 
   const commitImportedAssets = useCallback((importedAssets: EditorMediaAsset[]) => {
     if (importedAssets.length === 0) {
@@ -249,7 +191,6 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       setSelectedClipId(clipId);
       if (clip) {
         setSelectedAssetId(clip.assetId);
-        setPlayheadSec(clip.timelineStart);
       }
     },
     [timelineClips]
@@ -302,6 +243,46 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     setSelectedClipId(clipId);
   }, [timelineDurationSec]);
 
+  const deleteClip = useCallback(
+    (clipId?: string) => {
+      const targetClip = findClipById(timelineClips, clipId ?? selectedClipId);
+      if (!targetClip) {
+        return;
+      }
+
+      const linkedClip = findLinkedClip(timelineClips, targetClip);
+      const removedClipIds = new Set([targetClip.id, linkedClip?.id].filter(Boolean));
+
+      setTimelineClips((current) =>
+        current.filter((clip) => !removedClipIds.has(clip.id))
+      );
+      setSelectedClipId(undefined);
+      setSelectedAssetId(targetClip.assetId);
+      setPlayheadSec(clampPlayhead(targetClip.timelineStart, timelineDurationSec));
+    },
+    [selectedClipId, timelineClips, timelineDurationSec]
+  );
+
+  const splitClip = useCallback(
+    (clipId: string | undefined, splitTime: number) => {
+      const splitResult = splitTimelineClips(
+        timelineClips,
+        clipId ?? selectedClipId,
+        splitTime
+      );
+
+      if (!splitResult) {
+        return;
+      }
+
+      setTimelineClips(splitResult.clips);
+      setSelectedClipId(splitResult.selectedClipId);
+      setSelectedAssetId(splitResult.selectedAssetId);
+      setPlayheadSec(clampPlayhead(splitTime, timelineDurationSec));
+    },
+    [selectedClipId, timelineClips, timelineDurationSec]
+  );
+
   const setPlayhead = useCallback(
     (time: number) => {
       setPlayheadSec(clampPlayhead(time, timelineDurationSec));
@@ -332,6 +313,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       activeTimelineAsset,
       activeTimelineClip,
       timelineDurationSec,
+      timelineFps,
       playheadSec,
       importFiles,
       importPaths,
@@ -340,6 +322,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectClip,
       addAssetToTimeline,
       moveClip,
+      deleteClip,
+      splitClip,
       setPlayhead,
       nudgePlayhead,
       resolveTimelinePreview
@@ -349,6 +333,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       activeTimelineAsset,
       activeTimelineClip,
       assets,
+      deleteClip,
       importFiles,
       importPaths,
       moveClip,
@@ -363,6 +348,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectedClip,
       selectedClipId,
       setPlayhead,
+      splitClip,
+      timelineFps,
       timelineDurationSec,
       timelineClips
     ]
@@ -379,20 +366,6 @@ export const useEditor = (): EditorContextValue => {
 
   return context;
 };
-
-function parseDurationText(duration: string): number {
-  const parts = duration.split(":").map(Number);
-  if (parts.length !== 2 || parts.some(Number.isNaN)) {
-    return 8;
-  }
-
-  return parts[0] * 60 + parts[1];
-}
-
-function resolveInitialAssetId(index: number): string {
-  const ids = ["shot-01", "shot-03", "shot-02", "scene", "store", "shot-04", "shot-02"];
-  return ids[index] ?? "shot-01";
-}
 
 function clampTimelineStart(
   timelineStart: number,
@@ -448,6 +421,18 @@ function resolveTimelinePreviewValue(
   };
 }
 
+function resolveFirstTimelineVideoFps(
+  clips: EditorTimelineClip[],
+  assets: EditorMediaAsset[]
+): number | undefined {
+  const videoClip = clips.find((clip) => clip.trackId === "video-1");
+  if (!videoClip) {
+    return undefined;
+  }
+
+  return assets.find((asset) => asset.id === videoClip.assetId)?.fps;
+}
+
 function resolveAudioTargetTrack(
   targetTrackId: EditorTimelineTrackId | undefined
 ): "voiceover-1" | "music-1" {
@@ -477,23 +462,145 @@ function moveLinkedClips(
     if (clip.id === clipId) {
       return {
         ...clip,
-        timelineStart: nextStart
+        timelineStart: roundTimelineTime(nextStart)
       };
     }
 
     if (linkedClipId && clip.id === linkedClipId) {
       return {
         ...clip,
-        timelineStart: clampTimelineStart(
-          clip.timelineStart + delta,
-          clip.durationSec,
-          timelineDurationSec
+        timelineStart: roundTimelineTime(
+          clampTimelineStart(
+            clip.timelineStart + delta,
+            clip.durationSec,
+            timelineDurationSec
+          )
         )
       };
     }
 
     return clip;
   });
+}
+
+interface SplitTimelineResult {
+  clips: EditorTimelineClip[];
+  selectedAssetId: string;
+  selectedClipId: string;
+}
+
+function splitTimelineClips(
+  clips: EditorTimelineClip[],
+  clipId: string | undefined,
+  splitTime: number
+): SplitTimelineResult | undefined {
+  const targetClip =
+    findClipById(clips, clipId) ?? findSplitCandidate(clips, splitTime);
+  if (!targetClip || !canSplitClipAtTime(targetClip, splitTime)) {
+    return undefined;
+  }
+
+  const linkedClip = findLinkedClip(clips, targetClip);
+  if (linkedClip && !canSplitClipAtTime(linkedClip, splitTime)) {
+    return undefined;
+  }
+
+  const targetRightId = createClipId();
+  const linkedRightId = linkedClip ? createClipId() : undefined;
+  const selectedClipId = targetRightId;
+  const nextClips = clips.flatMap((clip) => {
+    if (clip.id === targetClip.id) {
+      return splitOneClip(clip, splitTime, targetRightId, linkedRightId);
+    }
+
+    if (linkedClip && clip.id === linkedClip.id && linkedRightId) {
+      return splitOneClip(clip, splitTime, linkedRightId, targetRightId);
+    }
+
+    return [clip];
+  });
+
+  return {
+    clips: nextClips,
+    selectedAssetId: targetClip.assetId,
+    selectedClipId
+  };
+}
+
+function splitOneClip(
+  clip: EditorTimelineClip,
+  splitTime: number,
+  rightClipId: string,
+  rightLinkedClipId?: string
+): [EditorTimelineClip, EditorTimelineClip] {
+  const timelineOffset = roundTimelineTime(splitTime - clip.timelineStart);
+  const sourceSplit = roundTimelineTime(clip.sourceIn + timelineOffset);
+  const leftClip: EditorTimelineClip = {
+    ...clip,
+    durationSec: timelineOffset,
+    sourceOut: sourceSplit
+  };
+  const rightClip: EditorTimelineClip = {
+    ...clip,
+    id: rightClipId,
+    timelineStart: roundTimelineTime(splitTime),
+    durationSec: roundTimelineTime(clip.durationSec - timelineOffset),
+    sourceIn: sourceSplit,
+    linkedClipId: rightLinkedClipId
+  };
+
+  return [leftClip, rightClip];
+}
+
+function findClipById(
+  clips: EditorTimelineClip[],
+  clipId: string | undefined
+): EditorTimelineClip | undefined {
+  if (!clipId) {
+    return undefined;
+  }
+
+  return clips.find((clip) => clip.id === clipId);
+}
+
+function findLinkedClip(
+  clips: EditorTimelineClip[],
+  clip: EditorTimelineClip
+): EditorTimelineClip | undefined {
+  return clips.find(
+    (candidate) =>
+      candidate.id === clip.linkedClipId || candidate.linkedClipId === clip.id
+  );
+}
+
+function findSplitCandidate(
+  clips: EditorTimelineClip[],
+  splitTime: number
+): EditorTimelineClip | undefined {
+  return (
+    clips.find(
+      (clip) => clip.trackId === "video-1" && canSplitClipAtTime(clip, splitTime)
+    ) ?? clips.find((clip) => canSplitClipAtTime(clip, splitTime))
+  );
+}
+
+function canSplitClipAtTime(clip: EditorTimelineClip, splitTime: number): boolean {
+  const minimumSegmentDuration = 0.1;
+  const clipStart = clip.timelineStart;
+  const clipEnd = clip.timelineStart + clip.durationSec;
+
+  return (
+    splitTime > clipStart + minimumSegmentDuration &&
+    splitTime < clipEnd - minimumSegmentDuration
+  );
+}
+
+function createClipId(): string {
+  return `clip-${crypto.randomUUID()}`;
+}
+
+function roundTimelineTime(time: number): number {
+  return Math.round(time * 1000) / 1000;
 }
 
 function getDesktopFilePath(file: File): string | undefined {

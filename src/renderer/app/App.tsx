@@ -4,12 +4,7 @@ import {
   Download,
   Film,
   Folder,
-  Layers3,
-  Music2,
   Sparkles,
-  Sticker,
-  Text,
-  WandSparkles,
   X
 } from "lucide-react";
 import { Inspector } from "../components/inspector";
@@ -24,11 +19,6 @@ const toolItems = [
   { label: "媒体库", icon: Folder, active: true },
   { label: "分镜脚本", icon: Film },
   { label: "素材", icon: Folder },
-  { label: "音频", icon: Music2 },
-  { label: "文本", icon: Text },
-  { label: "转场", icon: Layers3 },
-  { label: "特效", icon: WandSparkles },
-  { label: "贴纸", icon: Sticker },
   { label: "AI 工具", icon: Sparkles }
 ];
 

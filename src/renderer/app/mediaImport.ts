@@ -222,3 +222,15 @@ export const formatTimecode = (seconds: number, fps = 24): string => {
     "0"
   )}:${String(frames).padStart(2, "0")}`;
 };
+
+export const formatFps = (fps: number | undefined): string => {
+  if (!fps) {
+    return "未知";
+  }
+
+  const rounded = Number.isInteger(fps)
+    ? String(fps)
+    : fps.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+
+  return `${rounded} fps`;
+};
