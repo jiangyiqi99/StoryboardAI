@@ -10,13 +10,15 @@ import {
   Volume2,
   WandSparkles,
   X,
-  ZoomIn
+  ZoomIn,
+  ZoomOut
 } from "lucide-react";
 import {
   useEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   type PointerEvent
@@ -42,6 +44,13 @@ const trackLabels = [
   { id: "voiceover-1", code: "VO", name: "配音" },
   { id: "music-1", code: "BGM", name: "背景音乐" }
 ] satisfies Array<{ id: EditorTimelineTrackId; code: string; name: string }>;
+
+const ABSOLUTE_MIN_PIXELS_PER_SECOND = 0.01;
+const MAX_PIXELS_PER_SECOND = 96;
+const DEFAULT_PIXELS_PER_SECOND = 32;
+const MIN_TIMELINE_AREA_SEC = 40;
+const TRAILING_AREA_SEC = 12;
+const FIT_ZOOM_EPSILON = 0.05;
 
 interface HoverPreview {
   time: number;
@@ -89,14 +98,54 @@ export const Timeline = () => {
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [hoverPreview, setHoverPreview] = useState<HoverPreview | null>(null);
   const [pendingSolidDrop, setPendingSolidDrop] = useState<PendingSolidDrop | null>(null);
+  const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
+  const [pixelsPerSecond, setPixelsPerSecond] = useState(DEFAULT_PIXELS_PER_SECOND);
 
-  const markers = useMemo(
-    () =>
-      Array.from({ length: 8 }, (_marker, index) =>
-        formatTimecode((timelineDurationSec / 7) * index, timelineFps)
-      ),
-    [timelineDurationSec, timelineFps]
+  const fitTimelineDurationSec = Math.max(MIN_TIMELINE_AREA_SEC, timelineDurationSec);
+  const minPixelsPerSecond =
+    timelineViewportWidth > 0
+      ? clampNumber(
+          timelineViewportWidth / Math.max(1, fitTimelineDurationSec),
+          ABSOLUTE_MIN_PIXELS_PER_SECOND,
+          MAX_PIXELS_PER_SECOND
+        )
+      : ABSOLUTE_MIN_PIXELS_PER_SECOND;
+  const isFitZoom = pixelsPerSecond <= minPixelsPerSecond + FIT_ZOOM_EPSILON;
+  const visibleDurationSec =
+    timelineViewportWidth > 0 ? timelineViewportWidth / pixelsPerSecond : MIN_TIMELINE_AREA_SEC;
+  const trailingAreaSec = isFitZoom
+    ? 0
+    : Math.max(TRAILING_AREA_SEC, visibleDurationSec * 0.35);
+  const timelineAreaDurationSec = Math.max(
+    fitTimelineDurationSec,
+    timelineDurationSec + trailingAreaSec,
+    visibleDurationSec
   );
+  const timelineAreaWidth =
+    isFitZoom && timelineViewportWidth > 0
+      ? timelineViewportWidth
+      : Math.ceil(timelineAreaDurationSec * pixelsPerSecond);
+  const rulerStepSec = getRulerStepSec(pixelsPerSecond);
+  const rulerMarkers = useMemo(
+    () =>
+      Array.from(
+        { length: Math.floor(timelineAreaDurationSec / rulerStepSec) + 1 },
+        (_marker, index) => {
+          const time = index * rulerStepSec;
+
+          return {
+            time,
+            label: formatTimecode(time, timelineFps)
+          };
+        }
+      ),
+    [rulerStepSec, timelineAreaDurationSec, timelineFps]
+  );
+  const timelineContentStyle = {
+    width: `${timelineAreaWidth}px`,
+    "--timeline-minor-grid": `${Math.max(8, (rulerStepSec * pixelsPerSecond) / 4)}px`,
+    "--timeline-major-grid": `${Math.max(24, rulerStepSec * pixelsPerSecond)}px`
+  } satisfies CSSProperties & Record<"--timeline-minor-grid" | "--timeline-major-grid", string>;
 
   const getTimeFromClientX = (clientX: number): number => {
     const bounds = canvasRef.current?.getBoundingClientRect();
@@ -104,17 +153,21 @@ export const Timeline = () => {
       return 0;
     }
 
-    const x = Math.max(0, Math.min(bounds.width, clientX - bounds.left));
-    return Math.round((x / bounds.width) * timelineDurationSec * 10) / 10;
+    const viewportX = Math.max(0, Math.min(bounds.width, clientX - bounds.left));
+    const scrollLeft = canvasRef.current?.scrollLeft ?? 0;
+    const timelineX = Math.min(timelineAreaWidth, viewportX + scrollLeft);
+
+    return Math.round((timelineX / pixelsPerSecond) * 10) / 10;
   };
 
-  const getCanvasX = (clientX: number): number => {
+  const getTimelineX = (clientX: number): number => {
     const bounds = canvasRef.current?.getBoundingClientRect();
     if (!bounds) {
       return 0;
     }
 
-    return Math.max(0, Math.min(bounds.width, clientX - bounds.left));
+    const viewportX = Math.max(0, Math.min(bounds.width, clientX - bounds.left));
+    return Math.min(timelineAreaWidth, viewportX + (canvasRef.current?.scrollLeft ?? 0));
   };
 
   const getDropTrackId = (clientY: number): EditorTimelineTrackId => {
@@ -195,6 +248,46 @@ export const Timeline = () => {
     }
 
     splitClip(splitCandidate.id, playheadSec);
+  };
+
+  const handleZoomChange = (nextPixelsPerSecond: number) => {
+    const viewport = canvasRef.current;
+    const clampedPixelsPerSecond = clampNumber(
+      nextPixelsPerSecond,
+      minPixelsPerSecond,
+      MAX_PIXELS_PER_SECOND
+    );
+    const focusTime =
+      viewport && pixelsPerSecond > 0
+        ? (viewport.scrollLeft + viewport.clientWidth / 2) / pixelsPerSecond
+        : playheadSec;
+
+    setPixelsPerSecond(clampedPixelsPerSecond);
+
+    window.requestAnimationFrame(() => {
+      if (!viewport) {
+        return;
+      }
+
+      viewport.scrollLeft =
+        clampedPixelsPerSecond <= minPixelsPerSecond + FIT_ZOOM_EPSILON
+          ? 0
+          : Math.max(0, focusTime * clampedPixelsPerSecond - viewport.clientWidth / 2);
+    });
+  };
+
+  const handleFitTimelineToViewport = () => {
+    const viewport = canvasRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    const fittedPixelsPerSecond = minPixelsPerSecond;
+
+    setPixelsPerSecond(fittedPixelsPerSecond);
+    window.requestAnimationFrame(() => {
+      viewport.scrollLeft = 0;
+    });
   };
 
   const handleSolidColorConfirm = (
@@ -284,7 +377,7 @@ export const Timeline = () => {
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const nextTime = getTimeFromClientX(event.clientX);
-    const nextX = getCanvasX(event.clientX);
+    const nextX = getTimelineX(event.clientX);
     setHoverPreview((current) => ({
       ...(current ?? {}),
       time: nextTime,
@@ -321,6 +414,27 @@ export const Timeline = () => {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [deleteClip, selectedClipId]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const updateViewportWidth = () => setTimelineViewportWidth(canvas.clientWidth);
+    updateViewportWidth();
+
+    const resizeObserver = new ResizeObserver(updateViewportWidth);
+    resizeObserver.observe(canvas);
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  useEffect(() => {
+    setPixelsPerSecond((current) =>
+      clampNumber(current, minPixelsPerSecond, MAX_PIXELS_PER_SECOND)
+    );
+  }, [minPixelsPerSecond]);
 
   useEffect(() => {
     if (!hoverPreview) {
@@ -449,9 +563,43 @@ export const Timeline = () => {
           </button>
         </div>
         <div className="timeline-zoom">
-          <ZoomIn size={16} />
-          <span />
-          <Crop size={16} />
+          <button
+            className="icon-button timeline-zoom-button"
+            onClick={() => handleZoomChange(pixelsPerSecond - 8)}
+            title="缩小时间线"
+            type="button"
+          >
+            <ZoomOut size={15} />
+          </button>
+          <input
+            aria-label="时间线缩放"
+            className="timeline-zoom-slider"
+            max={MAX_PIXELS_PER_SECOND}
+            min={minPixelsPerSecond}
+            onChange={(event) => handleZoomChange(Number(event.currentTarget.value))}
+            step="0.1"
+            type="range"
+            value={pixelsPerSecond}
+          />
+          <button
+            className="icon-button timeline-zoom-button"
+            onClick={() => handleZoomChange(pixelsPerSecond + 8)}
+            title="放大时间线"
+            type="button"
+          >
+            <ZoomIn size={15} />
+          </button>
+          <button
+            className="icon-button timeline-zoom-button"
+            onClick={handleFitTimelineToViewport}
+            title="适配当前时间线区域"
+            type="button"
+          >
+            <Crop size={15} />
+          </button>
+          <span className="timeline-zoom-value">
+            {formatPixelsPerSecond(pixelsPerSecond)} px/s
+          </span>
         </div>
       </div>
 
@@ -481,134 +629,141 @@ export const Timeline = () => {
           onPointerUp={handlePointerUp}
           ref={canvasRef}
         >
-          <div className="time-ruler">
-            {markers.map((marker) => (
-              <span key={marker}>{marker}</span>
-            ))}
-          </div>
-          <div
-            className="playhead"
-            onPointerDown={beginScrubbing}
-            style={{
-              left: `${(playheadSec / timelineDurationSec) * 100}%`
-            }}
-          />
-          {hoverPreview ? (
-            <div
-              className="timeline-hover-preview"
-              style={{
-                left: `${hoverPreview.x}px`
-              }}
-            >
-              <div
-                className="timeline-hover-thumb"
-                style={
-                  hoverPreview.solidColor
-                    ? { background: rgbColorToCss(hoverPreview.solidColor) }
-                    : undefined
-                }
-              >
-                {hoverPreview.frameUrl ? <img alt="" src={hoverPreview.frameUrl} /> : null}
-              </div>
-              <div className="timeline-hover-meta">
-                <strong>{hoverPreview.assetName ?? "空白时间线"}</strong>
-                <time>
-                  {formatTimecode(hoverPreview.time, timelineFps)}
-                  {hoverPreview.sourceTime !== undefined
-                    ? ` · ${formatTimecode(hoverPreview.sourceTime, hoverPreview.sourceFps)}`
-                    : ""}
-                </time>
-              </div>
-            </div>
-          ) : null}
-
-          <div className="track-row video-row">
-            {videoClips.map((clip) => {
-              const asset = assets.find((candidate) => candidate.id === clip.assetId);
-              const thumbnailUrl = asset?.solidColor
-                ? undefined
-                : asset?.thumbnailUrl ?? asset?.objectUrl;
-              const className = [
-                "timeline-clip",
-                "video",
-                asset?.variant === "solid-color" ? "solid-color" : "",
-                clip.id === selectedClipId ? "selected" : "",
-                dragState?.clipId === clip.id ? "is-dragging" : ""
-              ]
-                .filter(Boolean)
-                .join(" ");
-              return (
-                <div
-                  className={className}
-                  key={clip.id}
-                  onPointerCancel={handleClipPointerUp}
-                  onPointerDown={(event) => handleClipPointerDown(clip, event)}
-                  onPointerMove={handleClipPointerMove}
-                  onPointerUp={handleClipPointerUp}
-                  style={{
-                    left: `${(clip.timelineStart / timelineDurationSec) * 100}%`,
-                    width: `${(clip.durationSec / timelineDurationSec) * 100}%`
-                  }}
+          <div className="timeline-content" style={timelineContentStyle}>
+            <div className="time-ruler">
+              {rulerMarkers.map((marker) => (
+                <span
+                  key={`${marker.time}-${marker.label}`}
+                  style={{ left: `${marker.time * pixelsPerSecond}px` }}
                 >
-                  {thumbnailUrl ? (
-                    <img alt="" draggable={false} src={thumbnailUrl} />
-                  ) : asset?.solidColor ? (
-                    <div
-                      className="timeline-clip-solid-thumb"
-                      style={{ background: rgbColorToCss(asset.solidColor) }}
-                    />
-                  ) : (
-                    <div className="timeline-clip-empty-thumb" />
-                  )}
-                  <span>{asset?.name ?? "未命名素材"}</span>
+                  {marker.label}
+                </span>
+              ))}
+            </div>
+            <div
+              className="playhead"
+              onPointerDown={beginScrubbing}
+              style={{
+                left: `${playheadSec * pixelsPerSecond}px`
+              }}
+            />
+            {hoverPreview ? (
+              <div
+                className="timeline-hover-preview"
+                style={{
+                  left: `${hoverPreview.x}px`
+                }}
+              >
+                <div
+                  className="timeline-hover-thumb"
+                  style={
+                    hoverPreview.solidColor
+                      ? { background: rgbColorToCss(hoverPreview.solidColor) }
+                      : undefined
+                  }
+                >
+                  {hoverPreview.frameUrl ? <img alt="" src={hoverPreview.frameUrl} /> : null}
                 </div>
-              );
-            })}
-          </div>
-          <div className="track-row audio-row">
-            {sourceAudioClips.map((clip) =>
-              renderAudioClip(
-                clip,
-                "source",
-                assets,
-                selectedClipId,
-                dragState?.clipId,
-                timelineDurationSec,
-                handleClipPointerDown,
-                handleClipPointerMove,
-                handleClipPointerUp
-              )
-            )}
-          </div>
-          <div className="track-row audio-row">
-            {voiceoverClips.map((clip) =>
-              renderAudioClip(
-                clip,
-                "voiceover",
-                assets,
-                selectedClipId,
-                dragState?.clipId,
-                timelineDurationSec,
-                handleClipPointerDown,
-                handleClipPointerMove,
-                handleClipPointerUp
-              )
-            )}
-          </div>
-          <div className="track-row audio-row">
-            {musicClips.map((clip) =>
-              renderAudioClip(
-                clip,
-                "music",
-                assets,
-                selectedClipId,
-                dragState?.clipId,
-                timelineDurationSec,
-                handleClipPointerDown,
-                handleClipPointerMove,
-                handleClipPointerUp
-              )
-            )}
+                <div className="timeline-hover-meta">
+                  <strong>{hoverPreview.assetName ?? "空白时间线"}</strong>
+                  <time>
+                    {formatTimecode(hoverPreview.time, timelineFps)}
+                    {hoverPreview.sourceTime !== undefined
+                      ? ` · ${formatTimecode(hoverPreview.sourceTime, hoverPreview.sourceFps)}`
+                      : ""}
+                  </time>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="track-row video-row">
+              {videoClips.map((clip) => {
+                const asset = assets.find((candidate) => candidate.id === clip.assetId);
+                const thumbnailUrl = asset?.solidColor
+                  ? undefined
+                  : asset?.thumbnailUrl ?? asset?.objectUrl;
+                const className = [
+                  "timeline-clip",
+                  "video",
+                  asset?.variant === "solid-color" ? "solid-color" : "",
+                  clip.id === selectedClipId ? "selected" : "",
+                  dragState?.clipId === clip.id ? "is-dragging" : ""
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+                return (
+                  <div
+                    className={className}
+                    key={clip.id}
+                    onPointerCancel={handleClipPointerUp}
+                    onPointerDown={(event) => handleClipPointerDown(clip, event)}
+                    onPointerMove={handleClipPointerMove}
+                    onPointerUp={handleClipPointerUp}
+                    style={{
+                      left: `${clip.timelineStart * pixelsPerSecond}px`,
+                      width: `${Math.max(8, clip.durationSec * pixelsPerSecond)}px`
+                    }}
+                  >
+                    {thumbnailUrl ? (
+                      <img alt="" draggable={false} src={thumbnailUrl} />
+                    ) : asset?.solidColor ? (
+                      <div
+                        className="timeline-clip-solid-thumb"
+                        style={{ background: rgbColorToCss(asset.solidColor) }}
+                      />
+                    ) : (
+                      <div className="timeline-clip-empty-thumb" />
+                    )}
+                    <span>{asset?.name ?? "未命名素材"}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="track-row audio-row">
+              {sourceAudioClips.map((clip) =>
+                renderAudioClip(
+                  clip,
+                  "source",
+                  assets,
+                  selectedClipId,
+                  dragState?.clipId,
+                  pixelsPerSecond,
+                  handleClipPointerDown,
+                  handleClipPointerMove,
+                  handleClipPointerUp
+                )
+              )}
+            </div>
+            <div className="track-row audio-row">
+              {voiceoverClips.map((clip) =>
+                renderAudioClip(
+                  clip,
+                  "voiceover",
+                  assets,
+                  selectedClipId,
+                  dragState?.clipId,
+                  pixelsPerSecond,
+                  handleClipPointerDown,
+                  handleClipPointerMove,
+                  handleClipPointerUp
+                )
+              )}
+            </div>
+            <div className="track-row audio-row">
+              {musicClips.map((clip) =>
+                renderAudioClip(
+                  clip,
+                  "music",
+                  assets,
+                  selectedClipId,
+                  dragState?.clipId,
+                  pixelsPerSecond,
+                  handleClipPointerDown,
+                  handleClipPointerMove,
+                  handleClipPointerUp
+                )
+              )}
+            </div>
           </div>
 
         </div>
@@ -733,13 +888,50 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+function getRulerStepSec(pixelsPerSecond: number): number {
+  const targetStepPx = 130;
+  const rawStep = targetStepPx / pixelsPerSecond;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalized = rawStep / magnitude;
+
+  if (normalized <= 1) {
+    return magnitude;
+  }
+
+  if (normalized <= 2) {
+    return 2 * magnitude;
+  }
+
+  if (normalized <= 5) {
+    return 5 * magnitude;
+  }
+
+  return 10 * magnitude;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+
+  return Math.max(min, Math.min(max, value));
+}
+
+function formatPixelsPerSecond(value: number): string {
+  if (value < 1) {
+    return value.toFixed(2);
+  }
+
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 function renderAudioClip(
   clip: EditorTimelineClip,
   tone: "source" | "voiceover" | "music",
   assets: ReturnType<typeof useEditor>["assets"],
   selectedClipId: string | undefined,
   draggingClipId: string | undefined,
-  timelineDurationSec: number,
+  pixelsPerSecond: number,
   onClipPointerDown: (
     clip: EditorTimelineClip,
     event: PointerEvent<HTMLDivElement>
@@ -768,8 +960,8 @@ function renderAudioClip(
       onPointerMove={onClipPointerMove}
       onPointerUp={onClipPointerUp}
       style={{
-        left: `${(clip.timelineStart / timelineDurationSec) * 100}%`,
-        width: `${(clip.durationSec / timelineDurationSec) * 100}%`
+        left: `${clip.timelineStart * pixelsPerSecond}px`,
+        width: `${Math.max(8, clip.durationSec * pixelsPerSecond)}px`
       }}
     >
       <Icon size={14} />

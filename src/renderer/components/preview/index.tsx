@@ -10,9 +10,32 @@ import {
   ZoomIn
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MutableRefObject } from "react";
 import { useEditor } from "../../app/EditorContext";
 import { formatTimecode } from "../../app/mediaImport";
 import { rgbColorToCss } from "../../app/solidColor";
+import type { TimelinePreviewTarget } from "../../app/EditorContext";
+
+type VideoBufferIndex = 0 | 1;
+
+interface VideoBufferState {
+  sourceKey: string;
+  url?: string;
+  poster?: string;
+  sourceTime: number;
+}
+
+interface VideoBufferRequest {
+  sourceKey: string;
+  url: string;
+  poster?: string;
+  sourceTime: number;
+}
+
+const emptyVideoBuffer = (index: VideoBufferIndex): VideoBufferState => ({
+  sourceKey: `empty-${index}`,
+  sourceTime: 0
+});
 
 export const Preview = () => {
   const {
@@ -24,9 +47,26 @@ export const Preview = () => {
     timelineDurationSec,
     timelineFps
   } = useEditor();
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRefs = useRef<Array<HTMLVideoElement | null>>([null, null]);
+  const autoPlayOnSourceChangeRef = useRef(false);
+  const activeBufferIndexRef = useRef<VideoBufferIndex>(0);
+  const videoBuffersRef = useRef<[VideoBufferState, VideoBufferState]>([
+    emptyVideoBuffer(0),
+    emptyVideoBuffer(1)
+  ]);
+  const isPlayingRef = useRef(false);
   const pendingSeekTimeRef = useRef<number | undefined>();
+  const playbackLastCommitPerformanceRef = useRef(0);
+  const playbackSourceKeyRef = useRef<string | undefined>();
+  const playbackStartPerformanceRef = useRef(0);
+  const playbackStartTimelineRef = useRef(0);
+  const suppressPauseRef = useRef(false);
   const sourceTimeRef = useRef(0);
+  const [activeBufferIndex, setActiveBufferIndex] = useState<VideoBufferIndex>(0);
+  const [videoBuffers, setVideoBuffers] = useState<[VideoBufferState, VideoBufferState]>([
+    emptyVideoBuffer(0),
+    emptyVideoBuffer(1)
+  ]);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const timelinePreview = resolveTimelinePreview(playheadSec);
@@ -35,15 +75,129 @@ export const Preview = () => {
   const mediaUrl = previewAsset?.fileUrl ?? previewAsset?.objectUrl;
   const canPlayVideo = previewAsset?.kind === "video" && Boolean(mediaUrl);
   const sourceTime = timelinePreview?.sourceTime ?? currentTime;
-  const sourceKey = `${previewAsset?.id ?? "empty"}:${timelinePreview?.clip.id ?? "asset"}`;
+  const sourceKey = timelinePreview
+    ? getTimelinePreviewSourceKey(timelinePreview)
+    : `${previewAsset?.id ?? "empty"}:asset`;
   const displayTime = hasTimelineClips ? playheadSec : currentTime;
+  const timelinePlaybackEndSec = useMemo(
+    () =>
+      timelineClips.reduce(
+        (maxEnd, clip) => Math.max(maxEnd, clip.timelineStart + clip.durationSec),
+        0
+      ),
+    [timelineClips]
+  );
+  const currentBufferRequest = useMemo<VideoBufferRequest | undefined>(() => {
+    if (!canPlayVideo || !mediaUrl) {
+      return undefined;
+    }
+
+    return {
+      sourceKey,
+      url: mediaUrl,
+      poster: previewAsset?.thumbnailUrl,
+      sourceTime
+    };
+  }, [canPlayVideo, mediaUrl, previewAsset?.thumbnailUrl, sourceKey, sourceTime]);
+  const nextTimelinePreview = useMemo(() => {
+    const clip = timelinePreview?.clip;
+    if (!clip) {
+      return undefined;
+    }
+
+    const nextTimelineTime = Math.min(
+      timelineDurationSec,
+      clip.timelineStart + clip.durationSec
+    );
+    const nextPreview =
+      resolveTimelinePreview(nextTimelineTime) ??
+      resolveTimelinePreview(Math.min(timelineDurationSec, nextTimelineTime + 0.001));
+
+    return nextPreview?.clip.id === clip.id ? undefined : nextPreview;
+  }, [resolveTimelinePreview, timelineDurationSec, timelinePreview?.clip]);
+  const nextBufferRequest = useMemo(
+    () => getVideoBufferRequest(nextTimelinePreview),
+    [nextTimelinePreview]
+  );
+  const activeBuffer = videoBuffers[activeBufferIndex];
+  const standbyBufferIndex = getStandbyBufferIndex(activeBufferIndex);
+  const standbyBuffer = videoBuffers[standbyBufferIndex];
 
   useEffect(() => {
     sourceTimeRef.current = sourceTime;
   }, [sourceTime]);
 
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    activeBufferIndexRef.current = activeBufferIndex;
+  }, [activeBufferIndex]);
+
+  useEffect(() => {
+    videoBuffersRef.current = videoBuffers;
+  }, [videoBuffers]);
+
+  useEffect(() => {
+    setVideoBuffers((current) => {
+      const activeIndex = activeBufferIndexRef.current;
+      const activeBuffer = current[activeIndex];
+      const nextActiveBuffer = currentBufferRequest
+        ? {
+            ...activeBuffer,
+            ...currentBufferRequest
+          }
+        : emptyVideoBuffer(activeIndex);
+
+      if (
+        activeBuffer.sourceKey === nextActiveBuffer.sourceKey &&
+        activeBuffer.url === nextActiveBuffer.url &&
+        activeBuffer.poster === nextActiveBuffer.poster
+      ) {
+        return current;
+      }
+
+      return replaceVideoBuffer(current, activeIndex, nextActiveBuffer);
+    });
+  }, [
+    currentBufferRequest?.poster,
+    currentBufferRequest?.sourceKey,
+    currentBufferRequest?.url
+  ]);
+
+  useEffect(() => {
+    setVideoBuffers((current) => {
+      const standbyIndex = getStandbyBufferIndex(activeBufferIndexRef.current);
+      const currentStandbyBuffer = current[standbyIndex];
+      const nextStandbyBuffer = nextBufferRequest
+        ? {
+            ...currentStandbyBuffer,
+            ...nextBufferRequest
+          }
+        : emptyVideoBuffer(standbyIndex);
+
+      if (
+        currentStandbyBuffer.sourceKey === nextStandbyBuffer.sourceKey &&
+        currentStandbyBuffer.url === nextStandbyBuffer.url &&
+        currentStandbyBuffer.poster === nextStandbyBuffer.poster &&
+        Math.abs(currentStandbyBuffer.sourceTime - nextStandbyBuffer.sourceTime) <= 0.001
+      ) {
+        return current;
+      }
+
+      return replaceVideoBuffer(current, standbyIndex, nextStandbyBuffer);
+    });
+  }, [
+    activeBufferIndex,
+    nextBufferRequest?.poster,
+    nextBufferRequest?.sourceKey,
+    nextBufferRequest?.sourceTime,
+    nextBufferRequest?.url
+  ]);
+
   const seekVideo = useCallback((time: number) => {
-    const video = videoRef.current;
+    const video = videoRefs.current[activeBufferIndexRef.current];
     if (!video || !Number.isFinite(time)) {
       return false;
     }
@@ -62,7 +216,7 @@ export const Preview = () => {
   }, []);
 
   const seekVideoAndWait = useCallback(async (time: number) => {
-    const video = videoRef.current;
+    const video = videoRefs.current[activeBufferIndexRef.current];
     if (!video || !Number.isFinite(time)) {
       return;
     }
@@ -86,24 +240,90 @@ export const Preview = () => {
   }, []);
 
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) {
+    const video = videoRefs.current[activeBufferIndex];
+    if (!video || !activeBuffer.url) {
       pendingSeekTimeRef.current = undefined;
       setCurrentTime(0);
       setIsPlaying(false);
       return;
     }
 
-    const initialSourceTime = sourceTimeRef.current;
+    const initialSourceTime = activeBuffer.sourceTime;
+    const shouldResumePlayback =
+      canPlayVideo && (autoPlayOnSourceChangeRef.current || isPlayingRef.current);
+    autoPlayOnSourceChangeRef.current = false;
+
+    const isAlreadyPlayingCorrectly =
+      shouldResumePlayback &&
+      !video.paused &&
+      !video.ended &&
+      video.readyState >= 2 &&
+      Math.abs(video.currentTime - initialSourceTime) < 1.5;
+
+    if (isAlreadyPlayingCorrectly) {
+      pendingSeekTimeRef.current = undefined;
+      setCurrentTime(video.currentTime);
+      setIsPlaying(true);
+      return;
+    }
+
     pendingSeekTimeRef.current = canPlayVideo ? initialSourceTime : undefined;
-    video.pause();
-    video.load();
+    const shouldLoad = video.readyState < 1;
+    if (shouldLoad) {
+      suppressPauseRef.current = true;
+      video.pause();
+      video.load();
+      window.setTimeout(() => {
+        suppressPauseRef.current = false;
+      }, 0);
+    }
     setCurrentTime(canPlayVideo ? initialSourceTime : 0);
-    setIsPlaying(false);
-  }, [canPlayVideo, sourceKey]);
+
+    if (!shouldResumePlayback) {
+      setIsPlaying(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const attemptPlay = async () => {
+      await seekVideoAndWait(initialSourceTime);
+      if (cancelled) return;
+      try {
+        await video.play();
+        if (!cancelled) setIsPlaying(true);
+      } catch {
+        if (cancelled) return;
+        try {
+          video.muted = true;
+          await video.play();
+          if (!cancelled) setIsPlaying(true);
+        } catch {
+          if (!cancelled && !hasTimelineClips) setIsPlaying(false);
+        }
+      }
+    };
+
+    void attemptPlay();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeBuffer.sourceKey,
+    activeBuffer.url,
+    activeBufferIndex,
+    canPlayVideo,
+    hasTimelineClips,
+    seekVideoAndWait
+  ]);
 
   useEffect(() => {
     if (!canPlayVideo) {
+      return;
+    }
+
+    if (hasTimelineClips && isPlaying) {
       return;
     }
 
@@ -111,41 +331,104 @@ export const Preview = () => {
     if (!isPlaying) {
       setCurrentTime(sourceTime);
     }
-  }, [canPlayVideo, isPlaying, seekVideo, sourceTime]);
+  }, [canPlayVideo, hasTimelineClips, isPlaying, seekVideo, sourceTime]);
 
   useEffect(() => {
-    if (!isPlaying) {
+    const standbyVideo = videoRefs.current[standbyBufferIndex];
+    if (!standbyVideo || !standbyBuffer.url) {
       return;
     }
 
-    const video = videoRef.current;
-    const playbackClip = timelinePreview?.clip;
-    if (!video) {
-      return;
-    }
-
-    let frameId = 0;
-    const tick = () => {
-      if (video.seeking) {
-        frameId = requestAnimationFrame(tick);
+    let cancelled = false;
+    const nextSourceTime = Math.max(0, standbyBuffer.sourceTime);
+    const warmSeek = () => {
+      if (cancelled || standbyVideo.readyState < 1) {
         return;
       }
 
-      const videoTime = video.currentTime;
-      setCurrentTime(videoTime);
+      if (Math.abs(standbyVideo.currentTime - nextSourceTime) > 0.04) {
+        standbyVideo.currentTime = nextSourceTime;
+      }
+    };
 
-      if (playbackClip) {
-        const clipEnd = playbackClip.timelineStart + playbackClip.durationSec;
-        const timelineTime = playbackClip.timelineStart + (videoTime - playbackClip.sourceIn);
+    standbyVideo.load();
+    warmSeek();
+    standbyVideo.addEventListener("loadedmetadata", warmSeek);
 
-        if (videoTime >= playbackClip.sourceOut - 0.01 || timelineTime >= clipEnd) {
-          video.pause();
-          setIsPlaying(false);
-          setPlayhead(Math.min(timelineDurationSec, clipEnd));
-          return;
+    return () => {
+      cancelled = true;
+      standbyVideo.removeEventListener("loadedmetadata", warmSeek);
+    };
+  }, [
+    standbyBuffer.sourceKey,
+    standbyBuffer.sourceTime,
+    standbyBuffer.url,
+    standbyBufferIndex
+  ]);
+
+  useEffect(() => {
+    if (!isPlaying || !hasTimelineClips) {
+      return;
+    }
+
+    const playbackEndSec = timelinePlaybackEndSec || timelineDurationSec;
+    let frameId = 0;
+
+    const tick = () => {
+      const now = performance.now();
+      const elapsedSec = (now - playbackStartPerformanceRef.current) / 1000;
+      const nextTimelineTime = Math.min(
+        playbackEndSec,
+        playbackStartTimelineRef.current + elapsedSec
+      );
+      const nextPreview =
+        resolveTimelinePreview(nextTimelineTime) ??
+        resolveTimelinePreview(Math.min(playbackEndSec, nextTimelineTime + 0.001));
+      const nextSourceKey = nextPreview
+        ? getTimelinePreviewSourceKey(nextPreview)
+        : undefined;
+
+      if (
+        nextPreview &&
+        nextSourceKey &&
+        playbackSourceKeyRef.current &&
+        nextSourceKey !== playbackSourceKeyRef.current
+      ) {
+        const activeVideo = videoRefs.current[activeBufferIndexRef.current];
+        playbackSourceKeyRef.current = nextSourceKey;
+
+        if (activeVideo) {
+          const didPromoteBuffer = promoteStandbyBuffer({
+            activeVideo,
+            nextPreview,
+            setVideoBuffers,
+            setActiveBufferIndex,
+            setCurrentTime,
+            activeBufferIndexRef,
+            autoPlayOnSourceChangeRef,
+            suppressPauseRef,
+            videoBuffersRef,
+            videoRefs
+          });
+
+          if (!didPromoteBuffer) {
+            autoPlayOnSourceChangeRef.current = true;
+          }
         }
+      }
 
-        setPlayhead(timelineTime);
+      const shouldCommitPlayhead =
+        nextTimelineTime >= playbackEndSec - 0.001 ||
+        now - playbackLastCommitPerformanceRef.current >= 33;
+      if (shouldCommitPlayhead) {
+        playbackLastCommitPerformanceRef.current = now;
+        setPlayhead(nextTimelineTime);
+      }
+
+      if (nextTimelineTime >= playbackEndSec - 0.001) {
+        pauseAllVideos(videoRefs);
+        setIsPlaying(false);
+        return;
       }
 
       frameId = requestAnimationFrame(tick);
@@ -154,37 +437,57 @@ export const Preview = () => {
     frameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frameId);
   }, [
+    hasTimelineClips,
     isPlaying,
+    resolveTimelinePreview,
     setPlayhead,
     timelineDurationSec,
-    timelinePreview?.clip,
-    timelinePreview?.clip?.durationSec,
-    timelinePreview?.clip?.sourceIn,
-    timelinePreview?.clip?.sourceOut,
-    timelinePreview?.clip?.timelineStart
+    timelinePlaybackEndSec
   ]);
 
   const handlePlay = async () => {
-    const video = videoRef.current;
+    const video = videoRefs.current[activeBufferIndexRef.current];
     if (!video || !canPlayVideo) {
       return;
+    }
+
+    const playbackEndSec = timelinePlaybackEndSec || timelineDurationSec;
+    const playbackStartSec =
+      hasTimelineClips && playheadSec >= playbackEndSec - 0.001 ? 0 : playheadSec;
+
+    playbackStartTimelineRef.current = playbackStartSec;
+    playbackStartPerformanceRef.current = performance.now();
+    playbackLastCommitPerformanceRef.current = 0;
+    playbackSourceKeyRef.current = timelinePreview
+      ? getTimelinePreviewSourceKey(timelinePreview)
+      : undefined;
+
+    if (hasTimelineClips && playbackStartSec !== playheadSec) {
+      setPlayhead(playbackStartSec);
     }
 
     if (timelinePreview) {
       await seekVideoAndWait(timelinePreview.sourceTime);
     }
 
-    await video.play();
+    try {
+      await video.play();
+    } catch {
+      if (!hasTimelineClips) {
+        setIsPlaying(false);
+        return;
+      }
+    }
     setIsPlaying(true);
   };
 
   const handlePause = () => {
-    const video = videoRef.current;
+    const video = videoRefs.current[activeBufferIndexRef.current];
     if (!video) {
       return;
     }
 
-    video.pause();
+    pauseAllVideos(videoRefs);
     setIsPlaying(false);
   };
 
@@ -204,7 +507,7 @@ export const Preview = () => {
       return;
     }
 
-    const video = videoRef.current;
+    const video = videoRefs.current[activeBufferIndexRef.current];
     if (!video) {
       return;
     }
@@ -244,17 +547,57 @@ export const Preview = () => {
 
       <div className="viewer">
         {canPlayVideo ? (
-          <video
-            controls={false}
-            onEnded={() => setIsPlaying(false)}
-            onLoadedMetadata={handleLoadedMetadata}
-            onPause={() => setIsPlaying(false)}
-            onPlay={() => setIsPlaying(true)}
-            onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-            poster={previewAsset?.thumbnailUrl}
-            ref={videoRef}
-            src={mediaUrl}
-          />
+          videoBuffers.map((buffer, index) => {
+            const bufferIndex = index as VideoBufferIndex;
+            const isActive = bufferIndex === activeBufferIndex;
+
+            return (
+              <video
+                aria-hidden={!isActive}
+                className={isActive ? "viewer-video-buffer is-active" : "viewer-video-buffer"}
+                controls={false}
+                key={bufferIndex}
+                muted={!isActive}
+                onEnded={() => {
+                  if (!hasTimelineClips && bufferIndex === activeBufferIndexRef.current) {
+                    setIsPlaying(false);
+                  }
+                }}
+                onLoadedMetadata={() => {
+                  if (bufferIndex === activeBufferIndexRef.current) {
+                    handleLoadedMetadata();
+                  }
+                }}
+                onPause={() => {
+                  if (
+                    !hasTimelineClips &&
+                    bufferIndex === activeBufferIndexRef.current &&
+                    !suppressPauseRef.current
+                  ) {
+                    setIsPlaying(false);
+                  }
+                }}
+                onPlay={() => {
+                  if (bufferIndex === activeBufferIndexRef.current) {
+                    setIsPlaying(true);
+                  }
+                }}
+                onTimeUpdate={(event) => {
+                  if (bufferIndex === activeBufferIndexRef.current) {
+                    setCurrentTime(event.currentTarget.currentTime);
+                  }
+                }}
+                playsInline
+                poster={buffer.poster}
+                preload="auto"
+                ref={(node) => {
+                  videoRefs.current[bufferIndex] = node;
+                }}
+                src={buffer.url}
+                tabIndex={isActive ? undefined : -1}
+              />
+            );
+          })
         ) : previewAsset?.solidColor ? (
           <div
             className="viewer-solid-color"
@@ -309,6 +652,127 @@ export const Preview = () => {
     </section>
   );
 };
+
+function getTimelinePreviewSourceKey(preview: TimelinePreviewTarget): string {
+  return [
+    preview.asset.id,
+    preview.clip.id,
+    preview.clip.sourceIn,
+    preview.clip.sourceOut
+  ].join(":");
+}
+
+function getVideoBufferRequest(
+  preview: TimelinePreviewTarget | undefined
+): VideoBufferRequest | undefined {
+  if (!preview || preview.asset.kind !== "video") {
+    return undefined;
+  }
+
+  const url = preview.asset.fileUrl ?? preview.asset.objectUrl;
+  if (!url) {
+    return undefined;
+  }
+
+  return {
+    sourceKey: getTimelinePreviewSourceKey(preview),
+    url,
+    poster: preview.asset.thumbnailUrl,
+    sourceTime: preview.sourceTime
+  };
+}
+
+function getStandbyBufferIndex(activeBufferIndex: VideoBufferIndex): VideoBufferIndex {
+  return activeBufferIndex === 0 ? 1 : 0;
+}
+
+function replaceVideoBuffer(
+  buffers: [VideoBufferState, VideoBufferState],
+  index: VideoBufferIndex,
+  buffer: VideoBufferState
+): [VideoBufferState, VideoBufferState] {
+  return index === 0 ? [buffer, buffers[1]] : [buffers[0], buffer];
+}
+
+function pauseAllVideos(
+  videoRefs: MutableRefObject<Array<HTMLVideoElement | null>>
+): void {
+  videoRefs.current.forEach((video) => video?.pause());
+}
+
+function promoteStandbyBuffer({
+  activeVideo,
+  nextPreview,
+  setVideoBuffers,
+  setActiveBufferIndex,
+  setCurrentTime,
+  activeBufferIndexRef,
+  autoPlayOnSourceChangeRef,
+  suppressPauseRef,
+  videoBuffersRef,
+  videoRefs
+}: {
+  activeVideo: HTMLVideoElement;
+  nextPreview: TimelinePreviewTarget;
+  setVideoBuffers(
+    updater: (buffers: [VideoBufferState, VideoBufferState]) => [VideoBufferState, VideoBufferState]
+  ): void;
+  setActiveBufferIndex(index: VideoBufferIndex): void;
+  setCurrentTime(time: number): void;
+  activeBufferIndexRef: MutableRefObject<VideoBufferIndex>;
+  autoPlayOnSourceChangeRef: MutableRefObject<boolean>;
+  suppressPauseRef: MutableRefObject<boolean>;
+  videoBuffersRef: MutableRefObject<[VideoBufferState, VideoBufferState]>;
+  videoRefs: MutableRefObject<Array<HTMLVideoElement | null>>;
+}): boolean {
+  const activeIndex = activeBufferIndexRef.current;
+  const standbyIndex = getStandbyBufferIndex(activeIndex);
+  const standbyVideo = videoRefs.current[standbyIndex];
+  const standbyBuffer = videoBuffersRef.current[standbyIndex];
+  const nextRequest = getVideoBufferRequest(nextPreview);
+
+  if (!nextRequest) {
+    return false;
+  }
+
+  const hasPreparedStandby =
+    Boolean(standbyVideo) &&
+    standbyBuffer.sourceKey === nextRequest.sourceKey &&
+    standbyBuffer.url === nextRequest.url;
+
+  activeVideo.muted = true;
+  suppressPauseRef.current = true;
+  window.setTimeout(() => {
+    suppressPauseRef.current = false;
+  }, 250);
+
+  autoPlayOnSourceChangeRef.current = true;
+  activeBufferIndexRef.current = standbyIndex;
+
+  setVideoBuffers((current) =>
+    replaceVideoBuffer(current, standbyIndex, {
+      ...current[standbyIndex],
+      ...nextRequest
+    })
+  );
+  setCurrentTime(nextRequest.sourceTime);
+  setActiveBufferIndex(standbyIndex);
+
+  if (standbyVideo && hasPreparedStandby && standbyVideo.readyState >= 1) {
+    standbyVideo.muted = false;
+    if (Math.abs(standbyVideo.currentTime - nextRequest.sourceTime) > 0.06) {
+      standbyVideo.currentTime = nextRequest.sourceTime;
+    }
+
+    void standbyVideo.play().catch(() => {
+      autoPlayOnSourceChangeRef.current = true;
+    });
+  }
+
+  window.setTimeout(() => activeVideo.pause(), 80);
+
+  return true;
+}
 
 function waitForMediaEvent(
   video: HTMLVideoElement,
