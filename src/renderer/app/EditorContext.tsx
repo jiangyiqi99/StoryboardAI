@@ -6,6 +6,8 @@ import {
   useMemo,
   useState
 } from "react";
+import type { ProjectCreateRequest, ProjectRuntimeLayout } from "@shared/ipc/contracts";
+import type { Project, ProjectRuntimeContext } from "@shared/types/project";
 import {
   createEditorAssetFromFile,
   createEditorAssetFromImportedFile
@@ -24,6 +26,13 @@ import {
   normalizeSolidDuration,
   rgbColorToLabel
 } from "./solidColor";
+import {
+  createBlankStoryBeat,
+  editorStateToProject,
+  ensureTrailingBlankStoryBeat,
+  isBlankStoryBeat,
+  projectSessionToEditorState
+} from "./projectMapping";
 
 const TIMELINE_BASE_DURATION_SEC = 40;
 
@@ -40,6 +49,13 @@ export interface SolidColorTimelineOptions {
 }
 
 interface EditorContextValue {
+  project?: Project;
+  projectRuntime?: ProjectRuntimeContext;
+  projectLayout?: ProjectRuntimeLayout;
+  isProjectOpen: boolean;
+  isProjectDirty: boolean;
+  isProjectSaving: boolean;
+  projectMessage?: string;
   assets: EditorMediaAsset[];
   timelineClips: EditorTimelineClip[];
   selectedAssetId?: string;
@@ -52,6 +68,9 @@ interface EditorContextValue {
   selectedClip?: EditorTimelineClip;
   activeTimelineClip?: EditorTimelineClip;
   activeTimelineAsset?: EditorMediaAsset;
+  createProject(request: ProjectCreateRequest): Promise<ProjectOperationResult>;
+  openProjectFromPicker(): Promise<ProjectOperationResult>;
+  saveProject(): Promise<ProjectOperationResult>;
   importFiles(files: FileList | File[]): Promise<ImportMediaResult>;
   importPaths(absolutePaths: string[]): Promise<ImportMediaResult>;
   openMediaPicker(): Promise<ImportMediaResult>;
@@ -76,6 +95,12 @@ interface EditorContextValue {
   resolveTimelinePreview(time: number): TimelinePreviewTarget | undefined;
 }
 
+export interface ProjectOperationResult {
+  ok: boolean;
+  cancelled?: boolean;
+  message?: string;
+}
+
 const EditorContext = createContext<EditorContextValue | null>(null);
 
 const initialAssets: EditorMediaAsset[] = [];
@@ -83,6 +108,14 @@ const initialTimelineClips: EditorTimelineClip[] = [];
 const DEFAULT_STORY_BEAT_DURATION_SEC = 5;
 
 export const EditorProvider = ({ children }: { children: ReactNode }) => {
+  const [project, setProject] = useState<Project | undefined>();
+  const [projectRuntime, setProjectRuntime] =
+    useState<ProjectRuntimeContext | undefined>();
+  const [projectLayout, setProjectLayout] =
+    useState<ProjectRuntimeLayout | undefined>();
+  const [isProjectDirty, setIsProjectDirty] = useState(false);
+  const [isProjectSaving, setIsProjectSaving] = useState(false);
+  const [projectMessage, setProjectMessage] = useState<string | undefined>();
   const [assets, setAssets] = useState<EditorMediaAsset[]>(initialAssets);
   const [timelineClips, setTimelineClips] =
     useState<EditorTimelineClip[]>(initialTimelineClips);
@@ -117,6 +150,136 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     resolveFirstTimelineVideoFps(timelineClips, assets) ??
     selectedAsset?.fps;
 
+  const markProjectDirty = useCallback(() => {
+    if (!projectRuntime) {
+      return;
+    }
+
+    setIsProjectDirty(true);
+    setProjectMessage(undefined);
+  }, [projectRuntime]);
+
+  const applyProjectSession = useCallback(
+    (
+      session: Awaited<ReturnType<typeof desktopApi.project.open>>,
+      message?: string
+    ) => {
+      const editorState = projectSessionToEditorState(session);
+      const selectedClip = editorState.timelineClips.find(
+        (clip) => clip.id === editorState.selectedClipId
+      );
+
+      setProject(session.project);
+      setProjectRuntime(session.runtime);
+      setProjectLayout(session.layout);
+      setAssets(editorState.assets);
+      setTimelineClips(editorState.timelineClips);
+      setStoryBeats(editorState.storyBeats);
+      setSelectedClipId(editorState.selectedClipId);
+      setSelectedAssetId(selectedClip?.assetId ?? editorState.assets[0]?.id);
+      setPlayheadSec(editorState.playheadSec);
+      setIsProjectDirty(false);
+      setIsProjectSaving(false);
+      setProjectMessage(message);
+    },
+    []
+  );
+
+  const confirmReplacingProject = useCallback(() => {
+    return (
+      !isProjectDirty ||
+      window.confirm("当前项目有未保存更改，继续会丢失这些更改。要继续吗？")
+    );
+  }, [isProjectDirty]);
+
+  const createProject = useCallback(
+    async (request: ProjectCreateRequest): Promise<ProjectOperationResult> => {
+      if (!confirmReplacingProject()) {
+        return { ok: false, cancelled: true };
+      }
+
+      try {
+        const session = await desktopApi.project.create(request);
+        applyProjectSession(session, "已创建项目");
+        return { ok: true, message: "已创建项目" };
+      } catch (error) {
+        const message = getErrorMessage(error);
+        setProjectMessage(message);
+        return { ok: false, message };
+      }
+    },
+    [applyProjectSession, confirmReplacingProject]
+  );
+
+  const openProjectFromPicker = useCallback(async (): Promise<ProjectOperationResult> => {
+    if (!confirmReplacingProject()) {
+      return { ok: false, cancelled: true };
+    }
+
+    try {
+      const selection = await desktopApi.project.selectOpenLocation({
+        defaultPath: projectRuntime?.projectRootPath
+      });
+      if (!selection) {
+        return { ok: false, cancelled: true };
+      }
+
+      const session = await desktopApi.project.open({
+        projectRootPath: selection.projectRootPath
+      });
+      applyProjectSession(session, "已打开项目");
+      return { ok: true, message: "已打开项目" };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setProjectMessage(message);
+      return { ok: false, message };
+    }
+  }, [applyProjectSession, confirmReplacingProject, projectRuntime]);
+
+  const saveProject = useCallback(async (): Promise<ProjectOperationResult> => {
+    if (!project || !projectRuntime) {
+      const message = "请先新建或打开项目";
+      setProjectMessage(message);
+      return { ok: false, message };
+    }
+
+    try {
+      setIsProjectSaving(true);
+      const nextProject = editorStateToProject(project, {
+        assets,
+        timelineClips,
+        storyBeats,
+        playheadSec,
+        selectedClipId
+      });
+      const session = await desktopApi.project.save({
+        projectRootPath: projectRuntime.projectRootPath,
+        project: nextProject
+      });
+
+      setProject(session.project);
+      setProjectRuntime(session.runtime);
+      setProjectLayout(session.layout);
+      setIsProjectDirty(false);
+      setProjectMessage("已保存");
+      return { ok: true, message: "已保存" };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setProjectMessage(message);
+      return { ok: false, message };
+    } finally {
+      setIsProjectSaving(false);
+    }
+  }, [
+    assets,
+    playheadSec,
+    project,
+    projectRuntime,
+    selectedClipId,
+    storyBeats,
+    timelineClips
+  ]);
+
   const commitImportedAssets = useCallback((importedAssets: EditorMediaAsset[]) => {
     if (importedAssets.length === 0) {
       return;
@@ -125,7 +288,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     setAssets((current) => [...importedAssets, ...current]);
     setSelectedAssetId(importedAssets[0].id);
     setSelectedClipId(undefined);
-  }, []);
+    markProjectDirty();
+  }, [markProjectDirty]);
 
   const importPaths = useCallback(
     async (absolutePaths: string[]) => {
@@ -134,7 +298,10 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       }
 
       try {
-        const importedFiles = await desktopApi.media.importFiles({ absolutePaths });
+        const importedFiles = await desktopApi.media.importFiles({
+          absolutePaths,
+          projectRootPath: projectRuntime?.projectRootPath
+        });
         const importedAssets = importedFiles.map(createEditorAssetFromImportedFile);
         commitImportedAssets(importedAssets);
 
@@ -149,12 +316,15 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         };
       }
     },
-    [commitImportedAssets]
+    [commitImportedAssets, projectRuntime]
   );
 
   const openMediaPicker = useCallback(async () => {
     try {
-      const importedFiles = await desktopApi.media.selectFiles({ allowMultiple: true });
+      const importedFiles = await desktopApi.media.selectFiles({
+        allowMultiple: true,
+        projectRootPath: projectRuntime?.projectRootPath
+      });
       const importedAssets = importedFiles.map(createEditorAssetFromImportedFile);
       commitImportedAssets(importedAssets);
 
@@ -168,7 +338,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         errors: [getErrorMessage(error)]
       };
     }
-  }, [commitImportedAssets]);
+  }, [commitImportedAssets, projectRuntime]);
 
   const importFiles = useCallback(
     async (files: FileList | File[]) => {
@@ -237,8 +407,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
           )
         )
       );
+      markProjectDirty();
     },
-    []
+    [markProjectDirty]
   );
 
   const moveStoryBeat = useCallback((beatId: string, targetBeatId: string) => {
@@ -261,7 +432,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
 
       return ensureTrailingBlankStoryBeat(nextBeats);
     });
-  }, []);
+    markProjectDirty();
+  }, [markProjectDirty]);
 
   const addAssetToTimeline = useCallback(
     (assetId: string, timelineStart = 0, targetTrackId?: EditorTimelineTrackId) => {
@@ -306,8 +478,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       setSelectedClipId(nextClip.id);
       setSelectedAssetId(assetId);
       setPlayheadSec(insertedClipStart);
+      markProjectDirty();
     },
-    [assets, timelineClips]
+    [assets, markProjectDirty, timelineClips]
   );
 
   const addSolidColorToTimeline = useCallback(
@@ -320,11 +493,12 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         name: `单色 ${rgbColorToLabel(normalizedColor)}`,
         kind: "image",
         durationSec: normalizedDuration,
-        width: 1920,
-        height: 1080,
+        width: project?.settings.width ?? 1920,
+        height: project?.settings.height ?? 1080,
         imported: false,
         variant: "solid-color",
-        solidColor: normalizedColor
+        solidColor: normalizedColor,
+        importedAt: new Date().toISOString()
       };
       const nextClip: EditorTimelineClip = {
         id: createClipId(),
@@ -349,8 +523,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       setSelectedAssetId(assetId);
       setSelectedClipId(nextClip.id);
       setPlayheadSec(insertedClipStart);
+      markProjectDirty();
     },
-    [timelineClips]
+    [markProjectDirty, project, timelineClips]
   );
 
   const moveClip = useCallback((clipId: string, timelineStart: number) => {
@@ -358,7 +533,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       moveLinkedClipsMagnetically(current, clipId, timelineStart)
     );
     setSelectedClipId(clipId);
-  }, []);
+    markProjectDirty();
+  }, [markProjectDirty]);
 
   const deleteClip = useCallback(
     (clipId?: string) => {
@@ -378,8 +554,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       setSelectedClipId(undefined);
       setSelectedAssetId(targetClip.assetId);
       setPlayheadSec(clampPlayhead(targetClip.timelineStart, timelineDurationSec));
+      markProjectDirty();
     },
-    [selectedClipId, timelineClips, timelineDurationSec]
+    [markProjectDirty, selectedClipId, timelineClips, timelineDurationSec]
   );
 
   const splitClip = useCallback(
@@ -398,22 +575,25 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       setSelectedClipId(splitResult.selectedClipId);
       setSelectedAssetId(splitResult.selectedAssetId);
       setPlayheadSec(clampPlayhead(splitTime, timelineDurationSec));
+      markProjectDirty();
     },
-    [selectedClipId, timelineClips, timelineDurationSec]
+    [markProjectDirty, selectedClipId, timelineClips, timelineDurationSec]
   );
 
   const setPlayhead = useCallback(
     (time: number) => {
       setPlayheadSec(clampPlayhead(time, timelineDurationSec));
+      markProjectDirty();
     },
-    [timelineDurationSec]
+    [markProjectDirty, timelineDurationSec]
   );
 
   const nudgePlayhead = useCallback(
     (delta: number) => {
       setPlayheadSec((current) => clampPlayhead(current + delta, timelineDurationSec));
+      markProjectDirty();
     },
-    [timelineDurationSec]
+    [markProjectDirty, timelineDurationSec]
   );
 
   const resolveTimelinePreview = useCallback(
@@ -423,6 +603,13 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
 
   const value = useMemo<EditorContextValue>(
     () => ({
+      project,
+      projectRuntime,
+      projectLayout,
+      isProjectOpen: Boolean(projectRuntime),
+      isProjectDirty,
+      isProjectSaving,
+      projectMessage,
       assets,
       timelineClips,
       selectedAssetId,
@@ -435,6 +622,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       timelineDurationSec,
       timelineFps,
       playheadSec,
+      createProject,
+      openProjectFromPicker,
+      saveProject,
       importFiles,
       importPaths,
       openMediaPicker,
@@ -457,14 +647,23 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       activeTimelineAsset,
       activeTimelineClip,
       assets,
+      createProject,
       deleteClip,
       importFiles,
       importPaths,
+      isProjectDirty,
+      isProjectSaving,
       moveClip,
       nudgePlayhead,
       openMediaPicker,
+      openProjectFromPicker,
       playheadSec,
+      project,
+      projectLayout,
+      projectMessage,
+      projectRuntime,
       resolveTimelinePreview,
+      saveProject,
       selectAsset,
       selectClip,
       selectedAsset,
@@ -851,36 +1050,6 @@ function createClipId(): string {
 
 function roundTimelineTime(time: number): number {
   return Math.round(time * 1000) / 1000;
-}
-
-function createBlankStoryBeat(): EditorStoryBeat {
-  return {
-    id: `story-${crypto.randomUUID()}`,
-    description: "",
-    durationSec: DEFAULT_STORY_BEAT_DURATION_SEC
-  };
-}
-
-function ensureTrailingBlankStoryBeat(beats: EditorStoryBeat[]): EditorStoryBeat[] {
-  const nextBeats = beats.length > 0 ? [...beats] : [createBlankStoryBeat()];
-
-  while (
-    nextBeats.length > 1 &&
-    isBlankStoryBeat(nextBeats[nextBeats.length - 1]) &&
-    isBlankStoryBeat(nextBeats[nextBeats.length - 2])
-  ) {
-    nextBeats.pop();
-  }
-
-  if (!isBlankStoryBeat(nextBeats[nextBeats.length - 1])) {
-    nextBeats.push(createBlankStoryBeat());
-  }
-
-  return nextBeats;
-}
-
-function isBlankStoryBeat(beat: EditorStoryBeat): boolean {
-  return beat.description.trim().length === 0;
 }
 
 function normalizeStoryBeatDuration(durationSec: number): number {

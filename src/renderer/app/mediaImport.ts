@@ -189,16 +189,20 @@ export const createEditorAssetFromImportedFile = (
     name: importedFile.name,
     kind: importedFile.kind,
     absolutePath: importedFile.absolutePath,
+    projectRelativePath: importedFile.projectRelativePath,
     fileUrl: importedFile.fileUrl,
+    thumbnailPath: importedFile.thumbnailPath,
     thumbnailUrl:
       importedFile.thumbnailUrl ??
       (importedFile.kind === "image" ? importedFile.fileUrl : undefined),
+    thumbnailProjectRelativePath: importedFile.thumbnailProjectRelativePath,
     durationSec,
     width: importedFile.metadata.width,
     height: importedFile.metadata.height,
     fps: importedFile.metadata.fps,
     metadata: importedFile.metadata,
-    imported: true
+    imported: true,
+    importedAt: new Date().toISOString()
   };
 };
 

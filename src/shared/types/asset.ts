@@ -31,7 +31,7 @@ export interface Asset {
   kind: AssetKind;
   origin: AssetOrigin;
   name: string;
-  projectRelativePath: string;
+  projectRelativePath?: string;
   metadata: AssetMetadata;
   thumbnailPath?: string;
   proxyPath?: string;

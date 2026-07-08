@@ -1,7 +1,15 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { createHash } from "node:crypto";
-import { basename, extname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { copyFile, mkdir, stat } from "node:fs/promises";
+import {
+  basename,
+  extname,
+  isAbsolute,
+  join,
+  parse,
+  relative,
+  resolve
+} from "node:path";
 import { IPC_CHANNELS } from "@shared/ipc/channels";
 import type {
   ImportedMediaFile,
@@ -13,6 +21,12 @@ import type {
   MediaRenderTimelineRequest,
   MediaSelectFilesRequest
 } from "@shared/ipc/contracts";
+import {
+  getProjectDirectoryPath,
+  isAivProjectRoot,
+  toProjectRelativePath
+} from "@project-system/projectPaths";
+import { pathToMediaResourceUrl } from "../mediaResourceProtocol";
 import type { AppServices } from "../services/appServices";
 
 const IMAGE_EXTENSIONS = new Set([
@@ -37,7 +51,7 @@ export const registerMediaHandlers = (services: AppServices): void => {
   ipcMain.handle(
     IPC_CHANNELS.MEDIA_IMPORT_FILES,
     (_event, request: MediaImportFilesRequest) =>
-      importMediaFiles(services, request.absolutePaths)
+      importMediaFiles(services, request.absolutePaths, request.projectRootPath)
   );
 
   ipcMain.handle(
@@ -83,7 +97,11 @@ export const registerMediaHandlers = (services: AppServices): void => {
         return [];
       }
 
-      return importMediaFiles(services, result.filePaths);
+      return importMediaFiles(
+        services,
+        result.filePaths,
+        request.projectRootPath
+      );
     }
   );
 
@@ -111,7 +129,7 @@ export const registerMediaHandlers = (services: AppServices): void => {
 
       return {
         path,
-        url: pathToFileURL(path).toString(),
+        url: pathToMediaResourceUrl(path),
         time: request.time
       };
     }
@@ -126,49 +144,160 @@ export const registerMediaHandlers = (services: AppServices): void => {
 
 async function importMediaFiles(
   services: AppServices,
-  absolutePaths: string[]
+  absolutePaths: string[],
+  projectRootPath?: string
 ): Promise<ImportedMediaFile[]> {
+  const normalizedProjectRootPath = normalizeImportProjectRootPath(projectRootPath);
   const uniquePaths = Array.from(new Set(absolutePaths.filter(Boolean)));
   const importedFiles: ImportedMediaFile[] = [];
 
   for (const absolutePath of uniquePaths) {
-    const metadata = await services.mediaEngine.frame.probe({ absolutePath });
-    const kind = getImportedMediaKind(absolutePath, metadata);
-    const fileUrl = pathToFileURL(absolutePath).toString();
+    const importedAbsolutePath = normalizedProjectRootPath
+      ? await copyMediaIntoProject(normalizedProjectRootPath, absolutePath)
+      : absolutePath;
+    const metadata = await services.mediaEngine.frame.probe({
+      absolutePath: importedAbsolutePath
+    });
+    const kind = getImportedMediaKind(importedAbsolutePath, metadata);
+    const fileUrl = pathToMediaResourceUrl(importedAbsolutePath);
     const importedFile: ImportedMediaFile = {
-      absolutePath,
+      absolutePath: importedAbsolutePath,
       fileUrl,
       kind,
-      name: basename(absolutePath),
+      name: basename(importedAbsolutePath),
       metadata
     };
 
+    if (normalizedProjectRootPath) {
+      importedFile.projectRelativePath = toProjectRelativePath(
+        normalizedProjectRootPath,
+        importedAbsolutePath
+      );
+    }
+
     if (kind === "image") {
-      importedFile.thumbnailPath = absolutePath;
+      importedFile.thumbnailPath = importedAbsolutePath;
       importedFile.thumbnailUrl = fileUrl;
+      importedFile.thumbnailProjectRelativePath =
+        importedFile.projectRelativePath;
     }
 
     if (kind === "video") {
       const thumbnailTime = Math.min(0.25, Math.max(0, (metadata.duration ?? 1) / 20));
-      const thumbnailPath = createCachePath(
-        "thumbnails",
-        absolutePath,
-        thumbnailTime,
-        480
-      );
+      const thumbnailPath = normalizedProjectRootPath
+        ? createProjectThumbnailPath(
+            normalizedProjectRootPath,
+            importedAbsolutePath,
+            thumbnailTime,
+            480
+          )
+        : createCachePath("thumbnails", importedAbsolutePath, thumbnailTime, 480);
       importedFile.thumbnailPath = await services.mediaEngine.frame.createThumbnail({
-        absolutePath,
+        absolutePath: importedAbsolutePath,
         time: thumbnailTime,
         outputPath: thumbnailPath,
         maxWidth: 480
       });
-      importedFile.thumbnailUrl = pathToFileURL(importedFile.thumbnailPath).toString();
+      importedFile.thumbnailUrl = pathToMediaResourceUrl(importedFile.thumbnailPath);
+
+      if (normalizedProjectRootPath) {
+        importedFile.thumbnailProjectRelativePath = toProjectRelativePath(
+          normalizedProjectRootPath,
+          importedFile.thumbnailPath
+        );
+      }
     }
 
     importedFiles.push(importedFile);
   }
 
   return importedFiles;
+}
+
+function normalizeImportProjectRootPath(
+  projectRootPath: string | undefined
+): string | undefined {
+  if (!projectRootPath) {
+    return undefined;
+  }
+
+  const resolvedProjectRootPath = resolve(projectRootPath);
+  if (!isAivProjectRoot(resolvedProjectRootPath)) {
+    throw new Error(`Invalid project root: ${projectRootPath}`);
+  }
+
+  return resolvedProjectRootPath;
+}
+
+async function copyMediaIntoProject(
+  projectRootPath: string,
+  sourcePath: string
+): Promise<string> {
+  const assetsDirectory = getProjectDirectoryPath(projectRootPath, "assets");
+  const resolvedSourcePath = resolve(sourcePath);
+
+  if (isPathInsideDirectory(assetsDirectory, resolvedSourcePath)) {
+    return resolvedSourcePath;
+  }
+
+  await mkdir(assetsDirectory, { recursive: true });
+  const destinationPath = await getAvailableImportedAssetPath(
+    assetsDirectory,
+    resolvedSourcePath
+  );
+  await copyFile(resolvedSourcePath, destinationPath);
+  return destinationPath;
+}
+
+async function getAvailableImportedAssetPath(
+  assetsDirectory: string,
+  sourcePath: string
+): Promise<string> {
+  const safeName = sanitizeImportedFileName(basename(sourcePath));
+  const parsedName = parse(safeName);
+  const baseName = parsedName.name || "asset";
+  const extension = parsedName.ext || extname(sourcePath);
+
+  for (let index = 0; index < 10000; index += 1) {
+    const candidateName =
+      index === 0 ? `${baseName}${extension}` : `${baseName}-${index}${extension}`;
+    const candidatePath = join(assetsDirectory, candidateName);
+    if (!(await pathExists(candidatePath))) {
+      return candidatePath;
+    }
+  }
+
+  throw new Error(`Unable to allocate imported media path for ${sourcePath}`);
+}
+
+function sanitizeImportedFileName(fileName: string): string {
+  const sanitized = fileName
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return sanitized || "asset";
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+function isPathInsideDirectory(directoryPath: string, candidatePath: string): boolean {
+  const relativePath = relative(resolve(directoryPath), resolve(candidatePath));
+  return (
+    relativePath === "" ||
+    (!relativePath.startsWith("..") && !isAbsolute(relativePath))
+  );
 }
 
 function getImportedMediaKind(
@@ -191,8 +320,33 @@ function getImportedMediaKind(
   throw new Error(`Unsupported media file: ${absolutePath}`);
 }
 
+function createProjectThumbnailPath(
+  projectRootPath: string,
+  absolutePath: string,
+  time: number,
+  maxWidth: number
+): string {
+  return join(
+    getProjectDirectoryPath(projectRootPath, "thumbnails"),
+    `${createCacheKey(absolutePath, time, maxWidth)}.jpg`
+  );
+}
+
 function createCachePath(
   directoryName: string,
+  absolutePath: string,
+  time: number,
+  maxWidth: number
+): string {
+  return join(
+    app.getPath("userData"),
+    "media-cache",
+    directoryName,
+    `${createCacheKey(absolutePath, time, maxWidth)}.jpg`
+  );
+}
+
+function createCacheKey(
   absolutePath: string,
   time: number,
   maxWidth: number
@@ -202,5 +356,5 @@ function createCachePath(
     .digest("hex")
     .slice(0, 18);
 
-  return join(app.getPath("userData"), "media-cache", directoryName, `${cacheKey}.jpg`);
+  return cacheKey;
 }

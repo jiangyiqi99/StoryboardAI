@@ -9,7 +9,11 @@ import type {
 } from "../types/app-config";
 import type { AiGenerationJob } from "../types/ai";
 import type { AssetMetadata } from "../types/asset";
-import type { Project, ProjectSettings } from "../types/project";
+import type {
+  Project,
+  ProjectRuntimeContext,
+  ProjectSettings
+} from "../types/project";
 import type { TimelineRange, TrackId } from "../types/timeline";
 
 export interface ProjectCreateRequest {
@@ -27,6 +31,43 @@ export interface ProjectSaveRequest {
   project: Project;
 }
 
+export interface ProjectRuntimeLayout {
+  [name: string]: string;
+}
+
+export interface ProjectRuntimeAssetFile {
+  assetId: string;
+  absolutePath?: string;
+  fileUrl?: string;
+  thumbnailPath?: string;
+  thumbnailUrl?: string;
+  proxyPath?: string;
+  proxyUrl?: string;
+}
+
+export interface ProjectSession {
+  project: Project;
+  runtime: ProjectRuntimeContext;
+  layout: ProjectRuntimeLayout;
+  assetFiles: ProjectRuntimeAssetFile[];
+}
+
+export interface ProjectSelectCreateDirectoryRequest {
+  defaultPath?: string;
+}
+
+export interface ProjectSelectCreateDirectoryResponse {
+  directoryPath: string;
+}
+
+export interface ProjectSelectOpenLocationRequest {
+  defaultPath?: string;
+}
+
+export interface ProjectSelectOpenLocationResponse {
+  projectRootPath: string;
+}
+
 export interface MediaProbeRequest {
   absolutePath: string;
 }
@@ -39,16 +80,20 @@ export interface ImportedMediaFile {
   kind: ImportedMediaKind;
   name: string;
   metadata: AssetMetadata;
+  projectRelativePath?: string;
   thumbnailPath?: string;
   thumbnailUrl?: string;
+  thumbnailProjectRelativePath?: string;
 }
 
 export interface MediaImportFilesRequest {
   absolutePaths: string[];
+  projectRootPath?: string;
 }
 
 export interface MediaSelectFilesRequest {
   allowMultiple?: boolean;
+  projectRootPath?: string;
 }
 
 export interface MediaExtractFrameRequest {
@@ -104,15 +149,23 @@ export type AiGenerateVideoRequest = GenerateVideoRequest;
 export interface IpcInvokeMap {
   "project:create": {
     request: ProjectCreateRequest;
-    response: Project;
+    response: ProjectSession;
   };
   "project:open": {
     request: ProjectOpenRequest;
-    response: Project;
+    response: ProjectSession;
   };
   "project:save": {
     request: ProjectSaveRequest;
-    response: Project;
+    response: ProjectSession;
+  };
+  "project:selectCreateDirectory": {
+    request: ProjectSelectCreateDirectoryRequest;
+    response: ProjectSelectCreateDirectoryResponse | null;
+  };
+  "project:selectOpenLocation": {
+    request: ProjectSelectOpenLocationRequest;
+    response: ProjectSelectOpenLocationResponse | null;
   };
   "media:probe": {
     request: MediaProbeRequest;

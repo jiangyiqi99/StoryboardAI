@@ -6,7 +6,11 @@ import type {
   ProjectOpenRequest,
   ProjectSaveRequest
 } from "@shared/ipc/contracts";
-import type { Project, ProjectSettings } from "@shared/types/project";
+import type {
+  Project,
+  ProjectRuntimeContext,
+  ProjectSettings
+} from "@shared/types/project";
 import type { Timeline } from "@shared/types/timeline";
 import {
   AIV_PROJECT_EXTENSION,
@@ -22,35 +26,41 @@ import {
 } from "./projectSchema";
 
 export interface ProjectFileService {
-  createProject(request: ProjectCreateRequest): Promise<Project>;
-  openProject(request: ProjectOpenRequest): Promise<Project>;
-  saveProject(request: ProjectSaveRequest): Promise<Project>;
+  createProject(request: ProjectCreateRequest): Promise<ProjectFileSnapshot>;
+  openProject(request: ProjectOpenRequest): Promise<ProjectFileSnapshot>;
+  saveProject(request: ProjectSaveRequest): Promise<ProjectFileSnapshot>;
+}
+
+export interface ProjectFileSnapshot {
+  project: Project;
+  runtime: ProjectRuntimeContext;
+  layout: Record<string, string>;
 }
 
 export class LocalProjectFileService implements ProjectFileService {
-  async createProject(request: ProjectCreateRequest): Promise<Project> {
+  async createProject(request: ProjectCreateRequest): Promise<ProjectFileSnapshot> {
     const projectRootPath = resolveProjectCreatePath(request);
     const projectJsonPath = getProjectJsonPath(projectRootPath);
 
-    await ensureProjectLayout(projectRootPath);
     await assertProjectDoesNotExist(projectJsonPath);
+    await ensureProjectLayout(projectRootPath);
 
     const project = createEmptyProject(request);
     await writeProjectJson(projectJsonPath, project);
-    return project;
+    return createProjectFileSnapshot(projectRootPath, project);
   }
 
-  async openProject(request: ProjectOpenRequest): Promise<Project> {
+  async openProject(request: ProjectOpenRequest): Promise<ProjectFileSnapshot> {
     const projectRootPath = normalizeProjectRootPath(request.projectRootPath);
     assertProjectRootPath(projectRootPath);
 
     const projectJsonPath = getProjectJsonPath(projectRootPath);
     const project = await readProjectJson(projectJsonPath);
     await ensureProjectLayout(projectRootPath);
-    return project;
+    return createProjectFileSnapshot(projectRootPath, project);
   }
 
-  async saveProject(request: ProjectSaveRequest): Promise<Project> {
+  async saveProject(request: ProjectSaveRequest): Promise<ProjectFileSnapshot> {
     const projectRootPath = normalizeProjectRootPath(request.projectRootPath);
     assertProjectRootPath(projectRootPath);
     await ensureProjectLayout(projectRootPath);
@@ -61,21 +71,37 @@ export class LocalProjectFileService implements ProjectFileService {
       updatedAt: new Date().toISOString()
     });
     await writeProjectJson(getProjectJsonPath(projectRootPath), project);
-    return project;
+    return createProjectFileSnapshot(projectRootPath, project);
   }
 
   describeLayout(projectRootPath: string): Record<string, string> {
-    return {
-      [PROJECT_FILE_NAME]: getProjectJsonPath(projectRootPath),
-      ...Object.fromEntries(
-        PROJECT_DIRECTORIES.map((directoryName) => [
-          directoryName,
-          getProjectDirectoryPath(projectRootPath, directoryName)
-        ])
-      )
-    };
+    return describeProjectLayout(projectRootPath);
   }
 }
+
+export const createProjectFileSnapshot = (
+  projectRootPath: string,
+  project: Project
+): ProjectFileSnapshot => ({
+  project,
+  runtime: {
+    projectRootPath,
+    projectJsonPath: getProjectJsonPath(projectRootPath)
+  },
+  layout: describeProjectLayout(projectRootPath)
+});
+
+export const describeProjectLayout = (
+  projectRootPath: string
+): Record<string, string> => ({
+  [PROJECT_FILE_NAME]: getProjectJsonPath(projectRootPath),
+  ...Object.fromEntries(
+    PROJECT_DIRECTORIES.map((directoryName) => [
+      directoryName,
+      getProjectDirectoryPath(projectRootPath, directoryName)
+    ])
+  )
+});
 
 const createEmptyProject = (request: ProjectCreateRequest): Project => {
   const now = new Date().toISOString();
@@ -186,12 +212,12 @@ const resolveProjectCreatePath = (request: ProjectCreateRequest): string => {
   return resolve(request.parentDirectory, directoryName);
 };
 
-const normalizeProjectRootPath = (projectRootPath: string): string => {
+export const normalizeProjectRootPath = (projectRootPath: string): string => {
   const resolved = resolve(projectRootPath);
   return basename(resolved) === PROJECT_FILE_NAME ? dirname(resolved) : resolved;
 };
 
-const assertProjectRootPath = (projectRootPath: string): void => {
+export const assertProjectRootPath = (projectRootPath: string): void => {
   if (!isAivProjectRoot(projectRootPath)) {
     throw new Error(
       `Project root must be a ${AIV_PROJECT_EXTENSION} directory: ${projectRootPath}`
@@ -296,7 +322,10 @@ const normalizeEditHistory = (
 
 const normalizeProjectName = (name: string): string => {
   const trimmed = name.trim();
-  return trimmed || "Untitled Project";
+  const withoutExtension = trimmed.endsWith(AIV_PROJECT_EXTENSION)
+    ? trimmed.slice(0, -AIV_PROJECT_EXTENSION.length).trim()
+    : trimmed;
+  return withoutExtension || "Untitled Project";
 };
 
 const sanitizeProjectDirectoryName = (name: string): string => {

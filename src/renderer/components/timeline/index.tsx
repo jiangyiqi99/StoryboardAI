@@ -215,6 +215,14 @@ export const Timeline = () => {
     setPendingSolidDrop(null);
   };
 
+  const beginScrubbing = (event: PointerEvent<HTMLElement>) => {
+    const nextTime = getTimeFromClientX(event.clientX);
+    event.stopPropagation();
+    setPlayhead(nextTime);
+    setIsScrubbing(true);
+    canvasRef.current?.setPointerCapture(event.pointerId);
+  };
+
   const handleClipPointerDown = (
     clip: EditorTimelineClip,
     event: PointerEvent<HTMLDivElement>
@@ -231,6 +239,7 @@ export const Timeline = () => {
 
     event.stopPropagation();
     selectClip(clip.id);
+    setPlayhead(pointerTime);
     setHoverPreview(null);
     setIsScrubbing(false);
     setDragState({
@@ -247,9 +256,10 @@ export const Timeline = () => {
     }
 
     event.stopPropagation();
-    const nextStart = getTimeFromClientX(event.clientX) - dragState.grabOffsetSec;
+    const pointerTime = getTimeFromClientX(event.clientX);
+    const nextStart = pointerTime - dragState.grabOffsetSec;
     moveClip(dragState.clipId, nextStart);
-    setPlayhead(Math.max(0, nextStart));
+    setPlayhead(pointerTime);
   };
 
   const handleClipPointerUp = (event: PointerEvent<HTMLDivElement>) => {
@@ -269,10 +279,7 @@ export const Timeline = () => {
       return;
     }
 
-    const nextTime = getTimeFromClientX(event.clientX);
-    setPlayhead(nextTime);
-    setIsScrubbing(true);
-    event.currentTarget.setPointerCapture(event.pointerId);
+    beginScrubbing(event);
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
@@ -481,6 +488,7 @@ export const Timeline = () => {
           </div>
           <div
             className="playhead"
+            onPointerDown={beginScrubbing}
             style={{
               left: `${(playheadSec / timelineDurationSec) * 100}%`
             }}

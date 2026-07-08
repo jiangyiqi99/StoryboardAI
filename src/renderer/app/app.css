@@ -95,15 +95,59 @@ button {
   gap: 22px;
 }
 
+.menu-root {
+  position: relative;
+}
+
 .app-menu button,
 .window-button {
   background: transparent;
 }
 
 .app-menu button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: #d5d9df;
   cursor: pointer;
   font-size: 14px;
+}
+
+.project-menu-popover {
+  position: absolute;
+  z-index: 25;
+  top: 28px;
+  left: -8px;
+  display: grid;
+  width: 168px;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  background: #151b21;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+}
+
+.project-menu-popover button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 9px;
+  border-radius: 6px;
+  color: #e7ecf3;
+}
+
+.project-menu-popover button:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.project-menu-popover button:disabled {
+  cursor: not-allowed;
+  color: #697480;
+}
+
+.project-menu-popover button:disabled:hover {
+  background: transparent;
 }
 
 .project-state {
@@ -114,8 +158,27 @@ button {
   font-size: 14px;
 }
 
+.project-state span:first-child {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .saved-state {
   color: #9ba4b0;
+}
+
+.saved-state.is-dirty {
+  color: #f0bd73;
+}
+
+.saved-state.is-error {
+  max-width: 360px;
+  overflow: hidden;
+  color: #ffb6b6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .topbar-actions {
@@ -152,6 +215,16 @@ button {
 
 .primary-button:hover {
   background: linear-gradient(180deg, #8465f5, #6b40dd);
+}
+
+.primary-button:disabled,
+.ghost-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.primary-button:disabled:hover {
+  background: linear-gradient(180deg, #7654ed, #6235d2);
 }
 
 .primary-button.compact,
@@ -1306,7 +1379,8 @@ button {
   color: #edf1f6;
 }
 
-.modal-backdrop {
+.modal-backdrop,
+.dialog-backdrop {
   position: fixed;
   z-index: 30;
   inset: 0;
@@ -1317,7 +1391,8 @@ button {
   backdrop-filter: blur(10px);
 }
 
-.export-dialog {
+.export-dialog,
+.project-dialog {
   display: grid;
   width: min(540px, 100%);
   gap: 18px;
@@ -1330,10 +1405,27 @@ button {
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.52);
 }
 
+.project-dialog {
+  width: min(460px, 100%);
+}
+
 .export-dialog-head,
-.export-dialog-actions {
+.export-dialog-actions,
+.project-dialog header,
+.project-dialog footer,
+.path-picker-row {
   display: flex;
   align-items: center;
+}
+
+.project-dialog header,
+.project-dialog footer {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.project-dialog footer {
+  justify-content: flex-end;
 }
 
 .export-dialog-head {
@@ -1341,7 +1433,8 @@ button {
   gap: 16px;
 }
 
-.export-dialog-head h2 {
+.export-dialog-head h2,
+.project-dialog h2 {
   margin: 0;
   color: #f5f8fc;
   font-size: 18px;
@@ -1432,6 +1525,42 @@ button {
 .export-dialog-actions {
   justify-content: flex-end;
   gap: 10px;
+}
+
+.path-picker-row {
+  gap: 8px;
+}
+
+.path-picker-row input {
+  min-width: 0;
+}
+
+.path-picker-row .ghost-button {
+  flex: 0 0 auto;
+}
+
+.project-dialog-hint,
+.dialog-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.project-dialog-hint {
+  color: #8f99a5;
+}
+
+.project-dialog-hint strong {
+  color: #dfe5ed;
+  font-weight: 650;
+}
+
+.dialog-error {
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 99, 99, 0.22);
+  border-radius: 6px;
+  background: rgba(255, 99, 99, 0.08);
+  color: #ffb6b6;
 }
 
 .solid-color-dialog {
@@ -1847,13 +1976,14 @@ button {
 
 .playhead {
   position: absolute;
-  z-index: 5;
+  z-index: 8;
   top: 0;
   bottom: 0;
   left: 38%;
   width: 2px;
   background: #875cff;
   cursor: ew-resize;
+  touch-action: none;
 }
 
 .playhead::before {

@@ -2,9 +2,15 @@ import { app, BrowserWindow } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerIpcHandlers } from "./ipc/registerIpcHandlers";
+import {
+  registerMediaResourceProtocol,
+  registerMediaResourceProtocolScheme
+} from "./mediaResourceProtocol";
 import { createAppServices } from "./services/appServices";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+registerMediaResourceProtocolScheme();
 
 const createMainWindow = (): BrowserWindow => {
   const mainWindow = new BrowserWindow({
@@ -31,6 +37,7 @@ const createMainWindow = (): BrowserWindow => {
 };
 
 app.whenReady().then(() => {
+  registerMediaResourceProtocol();
   registerIpcHandlers(createAppServices());
   createMainWindow();
 

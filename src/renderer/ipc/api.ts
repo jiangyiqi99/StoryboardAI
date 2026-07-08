@@ -14,7 +14,9 @@ const createUnavailableDesktopApi = (): AivDesktopApi => {
     project: {
       create: rejectDesktopUnavailable,
       open: rejectDesktopUnavailable,
-      save: rejectDesktopUnavailable
+      save: rejectDesktopUnavailable,
+      selectCreateDirectory: rejectDesktopUnavailable,
+      selectOpenLocation: rejectDesktopUnavailable
     },
     media: {
       probe: rejectDesktopUnavailable,

@@ -18,15 +18,19 @@ export interface EditorMediaAsset {
   name: string;
   kind: EditorAssetKind;
   absolutePath?: string;
+  projectRelativePath?: string;
   fileUrl?: string;
   objectUrl?: string;
+  thumbnailPath?: string;
   thumbnailUrl?: string;
+  thumbnailProjectRelativePath?: string;
   durationSec: number;
   width?: number;
   height?: number;
   fps?: number;
   metadata?: AssetMetadata;
   imported: boolean;
+  importedAt?: string;
   variant?: string;
   solidColor?: EditorRgbColor;
 }

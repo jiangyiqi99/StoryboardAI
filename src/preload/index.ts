@@ -18,7 +18,11 @@ export const desktopApi: AivDesktopApi = {
   project: {
     create: (request) => invoke(IPC_CHANNELS.PROJECT_CREATE, request),
     open: (request) => invoke(IPC_CHANNELS.PROJECT_OPEN, request),
-    save: (request) => invoke(IPC_CHANNELS.PROJECT_SAVE, request)
+    save: (request) => invoke(IPC_CHANNELS.PROJECT_SAVE, request),
+    selectCreateDirectory: (request = {}) =>
+      invoke(IPC_CHANNELS.PROJECT_SELECT_CREATE_DIRECTORY, request),
+    selectOpenLocation: (request = {}) =>
+      invoke(IPC_CHANNELS.PROJECT_SELECT_OPEN_LOCATION, request)
   },
   media: {
     probe: (request) => invoke(IPC_CHANNELS.MEDIA_PROBE, request),

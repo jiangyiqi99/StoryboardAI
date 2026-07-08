@@ -25,6 +25,8 @@ export const Preview = () => {
     timelineFps
   } = useEditor();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const pendingSeekTimeRef = useRef<number | undefined>();
+  const sourceTimeRef = useRef(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const timelinePreview = resolveTimelinePreview(playheadSec);
@@ -36,40 +38,79 @@ export const Preview = () => {
   const sourceKey = `${previewAsset?.id ?? "empty"}:${timelinePreview?.clip.id ?? "asset"}`;
   const displayTime = hasTimelineClips ? playheadSec : currentTime;
 
+  useEffect(() => {
+    sourceTimeRef.current = sourceTime;
+  }, [sourceTime]);
+
   const seekVideo = useCallback((time: number) => {
+    const video = videoRef.current;
+    if (!video || !Number.isFinite(time)) {
+      return false;
+    }
+
+    const nextTime = Math.max(0, time);
+    if (video.readyState < 1) {
+      pendingSeekTimeRef.current = nextTime;
+      return false;
+    }
+
+    if (Math.abs(video.currentTime - nextTime) > 0.04) {
+      video.currentTime = nextTime;
+    }
+    pendingSeekTimeRef.current = undefined;
+    return true;
+  }, []);
+
+  const seekVideoAndWait = useCallback(async (time: number) => {
     const video = videoRef.current;
     if (!video || !Number.isFinite(time)) {
       return;
     }
 
     const nextTime = Math.max(0, time);
-    if (Math.abs(video.currentTime - nextTime) > 0.04) {
-      video.currentTime = nextTime;
+    if (video.readyState < 1) {
+      pendingSeekTimeRef.current = nextTime;
+      await waitForMediaEvent(video, "loadedmetadata", 700);
     }
+
+    if (Math.abs(video.currentTime - nextTime) <= 0.04) {
+      pendingSeekTimeRef.current = undefined;
+      setCurrentTime(nextTime);
+      return;
+    }
+
+    video.currentTime = nextTime;
+    setCurrentTime(nextTime);
+    pendingSeekTimeRef.current = undefined;
+    await waitForMediaEvent(video, "seeked", 700);
   }, []);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) {
+      pendingSeekTimeRef.current = undefined;
       setCurrentTime(0);
       setIsPlaying(false);
       return;
     }
 
+    const initialSourceTime = sourceTimeRef.current;
+    pendingSeekTimeRef.current = canPlayVideo ? initialSourceTime : undefined;
     video.pause();
-    video.currentTime = 0;
     video.load();
-    setCurrentTime(0);
+    setCurrentTime(canPlayVideo ? initialSourceTime : 0);
     setIsPlaying(false);
-  }, [sourceKey]);
+  }, [canPlayVideo, sourceKey]);
 
   useEffect(() => {
-    if (!canPlayVideo || isPlaying) {
+    if (!canPlayVideo) {
       return;
     }
 
     seekVideo(sourceTime);
-    setCurrentTime(sourceTime);
+    if (!isPlaying) {
+      setCurrentTime(sourceTime);
+    }
   }, [canPlayVideo, isPlaying, seekVideo, sourceTime]);
 
   useEffect(() => {
@@ -85,6 +126,11 @@ export const Preview = () => {
 
     let frameId = 0;
     const tick = () => {
+      if (video.seeking) {
+        frameId = requestAnimationFrame(tick);
+        return;
+      }
+
       const videoTime = video.currentTime;
       setCurrentTime(videoTime);
 
@@ -125,7 +171,7 @@ export const Preview = () => {
     }
 
     if (timelinePreview) {
-      seekVideo(timelinePreview.sourceTime);
+      await seekVideoAndWait(timelinePreview.sourceTime);
     }
 
     await video.play();
@@ -140,6 +186,16 @@ export const Preview = () => {
 
     video.pause();
     setIsPlaying(false);
+  };
+
+  const handleLoadedMetadata = () => {
+    const pendingSeekTime = pendingSeekTimeRef.current;
+    if (pendingSeekTime === undefined) {
+      return;
+    }
+
+    seekVideo(pendingSeekTime);
+    setCurrentTime(pendingSeekTime);
   };
 
   const seekBy = (delta: number) => {
@@ -191,6 +247,7 @@ export const Preview = () => {
           <video
             controls={false}
             onEnded={() => setIsPlaying(false)}
+            onLoadedMetadata={handleLoadedMetadata}
             onPause={() => setIsPlaying(false)}
             onPlay={() => setIsPlaying(true)}
             onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
@@ -252,3 +309,26 @@ export const Preview = () => {
     </section>
   );
 };
+
+function waitForMediaEvent(
+  video: HTMLVideoElement,
+  eventName: keyof HTMLMediaElementEventMap,
+  timeoutMs: number
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      window.clearTimeout(timeoutId);
+      video.removeEventListener(eventName, finish);
+      resolve();
+    };
+    const timeoutId = window.setTimeout(finish, timeoutMs);
+
+    video.addEventListener(eventName, finish, { once: true });
+  });
+}

@@ -13,7 +13,12 @@ import type {
   MediaSelectFilesRequest,
   ProjectCreateRequest,
   ProjectOpenRequest,
-  ProjectSaveRequest
+  ProjectSaveRequest,
+  ProjectSelectCreateDirectoryRequest,
+  ProjectSelectCreateDirectoryResponse,
+  ProjectSelectOpenLocationRequest,
+  ProjectSelectOpenLocationResponse,
+  ProjectSession
 } from "./contracts";
 import type { GenerateVideoResponse } from "../ai-routing";
 import type {
@@ -23,7 +28,6 @@ import type {
 } from "../types/app-config";
 import type { AiGenerationJob } from "../types/ai";
 import type { AssetMetadata } from "../types/asset";
-import type { Project } from "../types/project";
 
 export interface AivDesktopApi {
   config: {
@@ -31,9 +35,15 @@ export interface AivDesktopApi {
     save(request: AppConfigSaveRequest): Promise<AppConfig>;
   };
   project: {
-    create(request: ProjectCreateRequest): Promise<Project>;
-    open(request: ProjectOpenRequest): Promise<Project>;
-    save(request: ProjectSaveRequest): Promise<Project>;
+    create(request: ProjectCreateRequest): Promise<ProjectSession>;
+    open(request: ProjectOpenRequest): Promise<ProjectSession>;
+    save(request: ProjectSaveRequest): Promise<ProjectSession>;
+    selectCreateDirectory(
+      request?: ProjectSelectCreateDirectoryRequest
+    ): Promise<ProjectSelectCreateDirectoryResponse | null>;
+    selectOpenLocation(
+      request?: ProjectSelectOpenLocationRequest
+    ): Promise<ProjectSelectOpenLocationResponse | null>;
   };
   media: {
     probe(request: MediaProbeRequest): Promise<AssetMetadata>;
