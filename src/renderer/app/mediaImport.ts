@@ -181,16 +181,45 @@ export const createEditorAssetFromFile = async (
 export const createEditorAssetFromImportedFile = (
   importedFile: ImportedMediaFile
 ): EditorMediaAsset => {
+  return createImportedEditorAsset(importedFile, {
+    id: `asset-${crypto.randomUUID()}`
+  });
+};
+
+export const updateEditorAssetFromImportedFile = (
+  asset: EditorMediaAsset,
+  importedFile: ImportedMediaFile
+): EditorMediaAsset => {
+  return createImportedEditorAsset(importedFile, {
+    id: asset.id,
+    objectUrl: asset.objectUrl,
+    importedAt: asset.importedAt,
+    variant: asset.variant,
+    solidColor: asset.solidColor
+  });
+};
+
+const createImportedEditorAsset = (
+  importedFile: ImportedMediaFile,
+  existing: Pick<EditorMediaAsset, "id"> &
+    Partial<
+      Pick<
+        EditorMediaAsset,
+        "objectUrl" | "importedAt" | "variant" | "solidColor"
+      >
+    >
+): EditorMediaAsset => {
   const durationSec =
     importedFile.metadata.duration ?? (importedFile.kind === "image" ? 5 : 8);
 
   return {
-    id: `asset-${crypto.randomUUID()}`,
+    id: existing.id,
     name: importedFile.name,
     kind: importedFile.kind,
     absolutePath: importedFile.absolutePath,
     projectRelativePath: importedFile.projectRelativePath,
     fileUrl: importedFile.fileUrl,
+    objectUrl: existing.objectUrl,
     thumbnailPath: importedFile.thumbnailPath,
     thumbnailUrl:
       importedFile.thumbnailUrl ??
@@ -202,7 +231,9 @@ export const createEditorAssetFromImportedFile = (
     fps: importedFile.metadata.fps,
     metadata: importedFile.metadata,
     imported: true,
-    importedAt: new Date().toISOString()
+    importedAt: existing.importedAt ?? new Date().toISOString(),
+    variant: existing.variant,
+    solidColor: existing.solidColor
   };
 };
 

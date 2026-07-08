@@ -6,11 +6,16 @@ import {
   useMemo,
   useState
 } from "react";
-import type { ProjectCreateRequest, ProjectRuntimeLayout } from "@shared/ipc/contracts";
+import type {
+  ProjectCreateRequest,
+  ProjectRuntimeLayout,
+  ProjectSession
+} from "@shared/ipc/contracts";
 import type { Project, ProjectRuntimeContext } from "@shared/types/project";
 import {
   createEditorAssetFromFile,
-  createEditorAssetFromImportedFile
+  createEditorAssetFromImportedFile,
+  updateEditorAssetFromImportedFile
 } from "./mediaImport";
 import type {
   EditorMediaAsset,
@@ -195,6 +200,28 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     );
   }, [isProjectDirty]);
 
+  const saveEditorStateToProject = useCallback(
+    async (baseProject: Project, projectRootPath: string): Promise<ProjectSession> => {
+      const storedAssets = await ensureImportedAssetsStoredInProject(
+        assets,
+        projectRootPath
+      );
+      const nextProject = editorStateToProject(baseProject, {
+        assets: storedAssets,
+        timelineClips,
+        storyBeats,
+        playheadSec,
+        selectedClipId
+      });
+
+      return desktopApi.project.save({
+        projectRootPath,
+        project: nextProject
+      });
+    },
+    [assets, playheadSec, selectedClipId, storyBeats, timelineClips]
+  );
+
   const createProject = useCallback(
     async (request: ProjectCreateRequest): Promise<ProjectOperationResult> => {
       if (!confirmReplacingProject()) {
@@ -203,7 +230,17 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
 
       try {
         const session = await desktopApi.project.create(request);
-        applyProjectSession(session, "已创建项目");
+        const shouldSaveCurrentWorkspace =
+          !projectRuntime &&
+          hasUnsavedStarterEditorState(assets, timelineClips, storyBeats);
+        const projectSession = shouldSaveCurrentWorkspace
+          ? await saveEditorStateToProject(
+              session.project,
+              session.runtime.projectRootPath
+            )
+          : session;
+
+        applyProjectSession(projectSession, "已创建项目");
         return { ok: true, message: "已创建项目" };
       } catch (error) {
         const message = getErrorMessage(error);
@@ -211,7 +248,15 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         return { ok: false, message };
       }
     },
-    [applyProjectSession, confirmReplacingProject]
+    [
+      applyProjectSession,
+      assets,
+      confirmReplacingProject,
+      projectRuntime,
+      saveEditorStateToProject,
+      storyBeats,
+      timelineClips
+    ]
   );
 
   const openProjectFromPicker = useCallback(async (): Promise<ProjectOperationResult> => {
@@ -248,23 +293,12 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
 
     try {
       setIsProjectSaving(true);
-      const nextProject = editorStateToProject(project, {
-        assets,
-        timelineClips,
-        storyBeats,
-        playheadSec,
-        selectedClipId
-      });
-      const session = await desktopApi.project.save({
-        projectRootPath: projectRuntime.projectRootPath,
-        project: nextProject
-      });
+      const session = await saveEditorStateToProject(
+        project,
+        projectRuntime.projectRootPath
+      );
 
-      setProject(session.project);
-      setProjectRuntime(session.runtime);
-      setProjectLayout(session.layout);
-      setIsProjectDirty(false);
-      setProjectMessage("已保存");
+      applyProjectSession(session, "已保存");
       return { ok: true, message: "已保存" };
     } catch (error) {
       const message = getErrorMessage(error);
@@ -275,9 +309,11 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [
     assets,
+    applyProjectSession,
     playheadSec,
     project,
     projectRuntime,
+    saveEditorStateToProject,
     selectedClipId,
     storyBeats,
     timelineClips
@@ -312,20 +348,12 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         setProjectMessage(replaceBeatId ? "正在替换生成分镜视频..." : "正在生成分镜视频...");
 
         const projectRootPath = projectRuntime.projectRootPath;
-        const nextProject = editorStateToProject(project, {
-          assets,
-          timelineClips,
-          storyBeats,
-          playheadSec,
-          selectedClipId
-        });
-        const savedSession = await desktopApi.project.save({
-          projectRootPath,
-          project: nextProject
-        });
+        const savedSession = await saveEditorStateToProject(project, projectRootPath);
+        const savedEditorState = projectSessionToEditorState(savedSession);
         setProject(savedSession.project);
         setProjectRuntime(savedSession.runtime);
         setProjectLayout(savedSession.layout);
+        setAssets(savedEditorState.assets);
         setIsProjectDirty(false);
 
         const provider = await resolveStoryboardGenerationProvider();
@@ -371,6 +399,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       playheadSec,
       project,
       projectRuntime,
+      saveEditorStateToProject,
       selectedClipId,
       storyBeats,
       timelineClips
@@ -1222,6 +1251,57 @@ function getDesktopFilePath(file: File): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function hasUnsavedStarterEditorState(
+  assets: EditorMediaAsset[],
+  timelineClips: EditorTimelineClip[],
+  storyBeats: EditorStoryBeat[]
+): boolean {
+  return (
+    assets.length > 0 ||
+    timelineClips.length > 0 ||
+    storyBeats.some((beat) => !isBlankStoryBeat(beat))
+  );
+}
+
+async function ensureImportedAssetsStoredInProject(
+  assets: EditorMediaAsset[],
+  projectRootPath: string
+): Promise<EditorMediaAsset[]> {
+  const assetsNeedingStorage = assets.filter(
+    (asset) => asset.imported && asset.absolutePath && !asset.projectRelativePath
+  );
+
+  if (assetsNeedingStorage.length === 0) {
+    return assets;
+  }
+
+  const sourcePaths = Array.from(
+    new Set(
+      assetsNeedingStorage
+        .map((asset) => asset.absolutePath)
+        .filter((path): path is string => Boolean(path))
+    )
+  );
+  const importedFiles = await desktopApi.media.importFiles({
+    absolutePaths: sourcePaths,
+    projectRootPath
+  });
+  const importedFilesBySourcePath = new Map(
+    sourcePaths.map((sourcePath, index) => [sourcePath, importedFiles[index]])
+  );
+
+  return assets.map((asset) => {
+    if (!asset.imported || !asset.absolutePath || asset.projectRelativePath) {
+      return asset;
+    }
+
+    const importedFile = importedFilesBySourcePath.get(asset.absolutePath);
+    return importedFile
+      ? updateEditorAssetFromImportedFile(asset, importedFile)
+      : asset;
+  });
 }
 
 function getErrorMessage(error: unknown): string {
