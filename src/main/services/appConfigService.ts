@@ -30,16 +30,18 @@ const defaultConfig = (): AppConfig => ({
   providers: {
     volcengineSeedance: {
       enabled: false,
-      accessKeyId: process.env.VOLCENGINE_ACCESS_KEY_ID,
-      secretAccessKey: process.env.VOLCENGINE_SECRET_ACCESS_KEY,
-      sessionToken: process.env.VOLCENGINE_SESSION_TOKEN,
-      reqKey: process.env.SEEDANCE_REQ_KEY ?? "jimeng_ti2v_v30_pro",
-      apiHost: process.env.SEEDANCE_API_HOST ?? "visual.volcengineapi.com",
-      apiVersion: process.env.SEEDANCE_API_VERSION ?? "2022-08-31",
-      region: process.env.VOLCENGINE_REGION ?? "cn-north-1",
-      service: process.env.VOLCENGINE_SERVICE ?? "cv",
+      apiKey: process.env.ARK_API_KEY ?? process.env.VOLCENGINE_API_KEY,
+      baseUrl:
+        process.env.ARK_BASE_URL ??
+        process.env.SEEDANCE_BASE_URL ??
+        "https://ark.cn-beijing.volces.com/api/v3",
+      reqKey:
+        process.env.SEEDANCE_MODEL_ID ??
+        process.env.ARK_SEEDANCE_MODEL_ID ??
+        process.env.SEEDANCE_REQ_KEY ??
+        "doubao-seedance-2-0-260128",
       timeoutMs: numberFromEnv("SEEDANCE_TIMEOUT_MS") ?? 60_000,
-      pollIntervalMs: numberFromEnv("SEEDANCE_POLL_INTERVAL_MS") ?? 5_000,
+      pollIntervalMs: numberFromEnv("SEEDANCE_POLL_INTERVAL_MS") ?? 30_000,
       pollTimeoutMs: numberFromEnv("SEEDANCE_POLL_TIMEOUT_MS") ?? 600_000
     },
     googleVeo: {
@@ -52,7 +54,6 @@ const defaultConfig = (): AppConfig => ({
         process.env.GOOGLE_VEO_MODEL ??
         "veo-3.0-generate-preview",
       extensionModel: process.env.VEO_EXTENSION_MODEL,
-      outputGcsUri: process.env.GOOGLE_VEO_OUTPUT_GCS_URI,
       defaultSampleCount: numberFromEnv("GOOGLE_VEO_SAMPLE_COUNT") ?? 1,
       defaultAspectRatio: process.env.GOOGLE_VEO_ASPECT_RATIO ?? "16:9",
       defaultResolution: process.env.GOOGLE_VEO_RESOLUTION,
@@ -140,6 +141,7 @@ const mergeVolcengineSeedanceConfig = (
   update: Partial<VolcengineSeedanceConfig> = {}
 ): VolcengineSeedanceConfig => {
   return mergeSecretsAware(base, update, [
+    "apiKey",
     "accessKeyId",
     "secretAccessKey",
     "sessionToken"
@@ -173,6 +175,7 @@ const redactConfig = (config: AppConfig): AppConfig => ({
   providers: {
     volcengineSeedance: {
       ...config.providers.volcengineSeedance,
+      apiKey: redactSecret(config.providers.volcengineSeedance.apiKey),
       accessKeyId: redactSecret(config.providers.volcengineSeedance.accessKeyId),
       secretAccessKey: redactSecret(
         config.providers.volcengineSeedance.secretAccessKey

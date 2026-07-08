@@ -33,14 +33,9 @@ interface ProviderDefinition {
 
 interface SeedanceFormState {
   alias: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-  sessionToken: string;
+  apiKey: string;
+  baseUrl: string;
   reqKey: string;
-  apiHost: string;
-  apiVersion: string;
-  region: string;
-  service: string;
   timeoutMs: string;
   pollIntervalMs: string;
   pollTimeoutMs: string;
@@ -53,7 +48,6 @@ interface VeoFormState {
   location: string;
   textImageModel: string;
   extensionModel: string;
-  outputGcsUri: string;
   defaultSampleCount: string;
   defaultAspectRatio: string;
   defaultResolution: string;
@@ -67,7 +61,7 @@ const providerDefinitions: ProviderDefinition[] = [
   {
     id: "seedance",
     title: "Seedance",
-    subtitle: "火山引擎视觉生成接口",
+    subtitle: "火山方舟视频生成 API",
     providerId: "volcengine-seedance",
     modelHint: "文字生成、首帧、首尾帧"
   },
@@ -400,52 +394,23 @@ const SeedanceFields = ({ form, onChange }: SeedanceFieldsProps) => {
         value={form.alias}
       />
       <ProviderTextField
-        label="Access Key ID"
-        onChange={(value) => update("accessKeyId", value)}
-        value={form.accessKeyId}
-      />
-      <ProviderTextField
-        label="Secret Access Key"
-        onChange={(value) => update("secretAccessKey", value)}
+        label="ARK API Key"
+        onChange={(value) => update("apiKey", value)}
+        placeholder="从火山方舟 API Key 页面获取"
         type="password"
-        value={form.secretAccessKey}
+        value={form.apiKey}
       />
       <ProviderTextField
-        label="Session Token"
-        onChange={(value) => update("sessionToken", value)}
-        placeholder="临时凭证可选"
-        type="password"
-        value={form.sessionToken}
-      />
-      <ProviderTextField
-        label="Req Key"
+        label="Model ID / Endpoint ID"
         onChange={(value) => update("reqKey", value)}
-        placeholder="jimeng_ti2v_v30_pro"
+        placeholder="doubao-seedance-2-0-260128"
         value={form.reqKey}
       />
       <ProviderTextField
-        label="Region"
-        onChange={(value) => update("region", value)}
-        placeholder="cn-north-1"
-        value={form.region}
-      />
-      <ProviderTextField
-        label="API Host"
-        onChange={(value) => update("apiHost", value)}
-        placeholder="visual.volcengineapi.com"
-        value={form.apiHost}
-      />
-      <ProviderTextField
-        label="API Version"
-        onChange={(value) => update("apiVersion", value)}
-        placeholder="2022-08-31"
-        value={form.apiVersion}
-      />
-      <ProviderTextField
-        label="Service"
-        onChange={(value) => update("service", value)}
-        placeholder="cv"
-        value={form.service}
+        label="Base URL"
+        onChange={(value) => update("baseUrl", value)}
+        placeholder="https://ark.cn-beijing.volces.com/api/v3"
+        value={form.baseUrl}
       />
       <ProviderTextField
         label="请求超时 ms"
@@ -514,12 +479,6 @@ const VeoFields = ({ form, onChange }: VeoFieldsProps) => {
         onChange={(value) => update("extensionModel", value)}
         placeholder="可选，后续视频续写使用"
         value={form.extensionModel}
-      />
-      <ProviderTextField
-        label="Output GCS URI"
-        onChange={(value) => update("outputGcsUri", value)}
-        placeholder="可空，空则尝试直接返回视频 bytes"
-        value={form.outputGcsUri}
       />
       <ProviderTextField
         label="Sample Count"
@@ -599,16 +558,11 @@ const seedanceToForm = (
   config: VolcengineSeedanceConfig | undefined
 ): SeedanceFormState => ({
   alias: config?.alias ?? "",
-  accessKeyId: config?.accessKeyId ?? "",
-  secretAccessKey: config?.secretAccessKey ?? "",
-  sessionToken: config?.sessionToken ?? "",
-  reqKey: config?.reqKey ?? "jimeng_ti2v_v30_pro",
-  apiHost: config?.apiHost ?? "visual.volcengineapi.com",
-  apiVersion: config?.apiVersion ?? "2022-08-31",
-  region: config?.region ?? "cn-north-1",
-  service: config?.service ?? "cv",
+  apiKey: config?.apiKey ?? "",
+  baseUrl: config?.baseUrl ?? "https://ark.cn-beijing.volces.com/api/v3",
+  reqKey: config?.reqKey ?? "doubao-seedance-2-0-260128",
   timeoutMs: stringFromNumber(config?.timeoutMs ?? 60_000),
-  pollIntervalMs: stringFromNumber(config?.pollIntervalMs ?? 5_000),
+  pollIntervalMs: stringFromNumber(config?.pollIntervalMs ?? 30_000),
   pollTimeoutMs: stringFromNumber(config?.pollTimeoutMs ?? 600_000)
 });
 
@@ -619,7 +573,6 @@ const veoToForm = (config: GoogleVeoConfig | undefined): VeoFormState => ({
   location: config?.location ?? "global",
   textImageModel: config?.textImageModel ?? "veo-3.0-generate-preview",
   extensionModel: config?.extensionModel ?? "",
-  outputGcsUri: config?.outputGcsUri ?? "",
   defaultSampleCount: stringFromNumber(config?.defaultSampleCount ?? 1),
   defaultAspectRatio: config?.defaultAspectRatio ?? "16:9",
   defaultResolution: config?.defaultResolution ?? "",
@@ -634,14 +587,9 @@ const seedanceFormToConfig = (
 ): Partial<VolcengineSeedanceConfig> => ({
   enabled: true,
   alias: optionalString(form.alias),
-  accessKeyId: optionalString(form.accessKeyId),
-  secretAccessKey: optionalString(form.secretAccessKey),
-  sessionToken: optionalString(form.sessionToken),
+  apiKey: optionalString(form.apiKey),
+  baseUrl: optionalString(form.baseUrl),
   reqKey: optionalString(form.reqKey),
-  apiHost: optionalString(form.apiHost),
-  apiVersion: optionalString(form.apiVersion),
-  region: optionalString(form.region),
-  service: optionalString(form.service),
   timeoutMs: optionalNumber(form.timeoutMs),
   pollIntervalMs: optionalNumber(form.pollIntervalMs),
   pollTimeoutMs: optionalNumber(form.pollTimeoutMs)
@@ -650,6 +598,8 @@ const seedanceFormToConfig = (
 const deletedSeedanceConfig = (): Partial<VolcengineSeedanceConfig> => ({
   enabled: false,
   alias: undefined,
+  apiKey: undefined,
+  baseUrl: undefined,
   accessKeyId: undefined,
   secretAccessKey: undefined,
   sessionToken: undefined,
@@ -671,7 +621,6 @@ const veoFormToConfig = (form: VeoFormState): Partial<GoogleVeoConfig> => ({
   location: optionalString(form.location),
   textImageModel: optionalString(form.textImageModel),
   extensionModel: optionalString(form.extensionModel),
-  outputGcsUri: optionalString(form.outputGcsUri),
   defaultSampleCount: optionalNumber(form.defaultSampleCount),
   defaultAspectRatio: optionalString(form.defaultAspectRatio),
   defaultResolution: optionalString(form.defaultResolution),
@@ -708,10 +657,7 @@ const isProviderConfigured = (
   }
 
   if (provider === "seedance") {
-    return Boolean(
-      config.providers.volcengineSeedance.accessKeyId &&
-        config.providers.volcengineSeedance.secretAccessKey
-    );
+    return Boolean(config.providers.volcengineSeedance.apiKey);
   }
 
   return Boolean(config.providers.googleVeo.apiKey && config.providers.googleVeo.projectId);
@@ -746,7 +692,7 @@ const getProviderModelLabel = (
   config: AppConfig | null
 ): string => {
   if (provider === "seedance") {
-    return config?.providers.volcengineSeedance.reqKey ?? "jimeng_ti2v_v30_pro";
+    return config?.providers.volcengineSeedance.reqKey ?? "doubao-seedance-2-0-260128";
   }
 
   return config?.providers.googleVeo.textImageModel ?? "veo-3.0-generate-preview";

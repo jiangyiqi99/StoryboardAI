@@ -3,6 +3,8 @@ export const APP_CONFIG_SCHEMA_VERSION = "0.1.0";
 export interface VolcengineSeedanceConfig {
   enabled?: boolean;
   alias?: string;
+  apiKey?: string;
+  baseUrl?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
   sessionToken?: string;

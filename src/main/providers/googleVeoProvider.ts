@@ -84,7 +84,6 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
         stringMetadata(request, "aspectRatio") ??
         config.defaultAspectRatio ??
         "16:9",
-      storageUri: stringMetadata(request, "outputGcsUri") ?? config.outputGcsUri,
       durationSeconds: request.durationSec,
       resolution: stringMetadata(request, "resolution") ?? config.defaultResolution,
       negativePrompt: request.negativePrompt,
@@ -124,7 +123,7 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
       };
     }
 
-    const outputs = await extractVideoOutputs(result, this.providerId);
+    const outputs = await extractGoogleVeoByteOutputs(result);
     return {
       providerId: this.providerId,
       providerJobId: encodeProviderJobId(modelId, `direct-${randomUUID()}`),
@@ -177,7 +176,7 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
       };
     }
 
-    const outputs = await extractVideoOutputs(result, this.providerId);
+    const outputs = await extractGoogleVeoByteOutputs(result);
     return {
       providerId: this.providerId,
       providerJobId,
@@ -250,7 +249,6 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
       location: config.location ?? "global",
       textImageModel: config.textImageModel ?? DEFAULT_TEXT_IMAGE_MODEL,
       extensionModel: config.extensionModel,
-      outputGcsUri: config.outputGcsUri,
       defaultSampleCount: config.defaultSampleCount ?? 1,
       defaultAspectRatio: config.defaultAspectRatio ?? "16:9",
       defaultResolution: config.defaultResolution,
@@ -268,7 +266,6 @@ interface RequiredGoogleVeoConfig {
   location: string;
   textImageModel: string;
   extensionModel?: string;
-  outputGcsUri?: string;
   defaultSampleCount: number;
   defaultAspectRatio: string;
   defaultResolution?: string;
@@ -371,6 +368,14 @@ const mapVeoMedia = async (
     bytesBase64Encoded: media.bytesBase64Encoded,
     mimeType: media.mimeType
   };
+};
+
+const extractGoogleVeoByteOutputs = async (
+  result: Record<string, unknown>
+): Promise<string[]> => {
+  return extractVideoOutputs(result, capabilities.providerId, {
+    includeUriOutputs: false
+  });
 };
 
 const resolveModelId = (

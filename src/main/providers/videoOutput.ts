@@ -24,12 +24,19 @@ const VIDEO_BASE64_KEYS = new Set([
   "videoBase64"
 ]);
 
+interface ExtractVideoOutputOptions {
+  includeUriOutputs?: boolean;
+}
+
 export const extractVideoOutputs = async (
   value: unknown,
-  providerId: string
+  providerId: string,
+  options: ExtractVideoOutputOptions = {}
 ): Promise<string[]> => {
   const outputs: string[] = [];
-  await collectVideoOutputs(value, providerId, outputs);
+  await collectVideoOutputs(value, providerId, outputs, undefined, {
+    includeUriOutputs: options.includeUriOutputs ?? true
+  });
   return Array.from(new Set(outputs));
 };
 
@@ -37,11 +44,12 @@ const collectVideoOutputs = async (
   value: unknown,
   providerId: string,
   outputs: string[],
-  inheritedMimeType?: string
+  inheritedMimeType: string | undefined,
+  options: Required<ExtractVideoOutputOptions>
 ): Promise<void> => {
   if (Array.isArray(value)) {
     for (const item of value) {
-      await collectVideoOutputs(item, providerId, outputs, inheritedMimeType);
+      await collectVideoOutputs(item, providerId, outputs, inheritedMimeType, options);
     }
     return;
   }
@@ -57,7 +65,7 @@ const collectVideoOutputs = async (
     inheritedMimeType;
 
   for (const [key, item] of Object.entries(record)) {
-    if (VIDEO_URI_KEYS.has(key) && typeof item === "string") {
+    if (options.includeUriOutputs && VIDEO_URI_KEYS.has(key) && typeof item === "string") {
       outputs.push(item);
       continue;
     }
@@ -67,7 +75,7 @@ const collectVideoOutputs = async (
       continue;
     }
 
-    await collectVideoOutputs(item, providerId, outputs, mimeType);
+    await collectVideoOutputs(item, providerId, outputs, mimeType, options);
   }
 };
 
