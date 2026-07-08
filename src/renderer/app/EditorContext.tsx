@@ -55,6 +55,7 @@ interface EditorContextValue {
   isProjectOpen: boolean;
   isProjectDirty: boolean;
   isProjectSaving: boolean;
+  isAiGeneratingStoryboard: boolean;
   projectMessage?: string;
   assets: EditorMediaAsset[];
   timelineClips: EditorTimelineClip[];
@@ -71,6 +72,7 @@ interface EditorContextValue {
   createProject(request: ProjectCreateRequest): Promise<ProjectOperationResult>;
   openProjectFromPicker(): Promise<ProjectOperationResult>;
   saveProject(): Promise<ProjectOperationResult>;
+  generateStoryboardVideos(replaceBeatId?: string): Promise<ProjectOperationResult>;
   importFiles(files: FileList | File[]): Promise<ImportMediaResult>;
   importPaths(absolutePaths: string[]): Promise<ImportMediaResult>;
   openMediaPicker(): Promise<ImportMediaResult>;
@@ -115,6 +117,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     useState<ProjectRuntimeLayout | undefined>();
   const [isProjectDirty, setIsProjectDirty] = useState(false);
   const [isProjectSaving, setIsProjectSaving] = useState(false);
+  const [isAiGeneratingStoryboard, setIsAiGeneratingStoryboard] = useState(false);
   const [projectMessage, setProjectMessage] = useState<string | undefined>();
   const [assets, setAssets] = useState<EditorMediaAsset[]>(initialAssets);
   const [timelineClips, setTimelineClips] =
@@ -279,6 +282,100 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     storyBeats,
     timelineClips
   ]);
+
+  const generateStoryboardVideos = useCallback(
+    async (replaceBeatId?: string): Promise<ProjectOperationResult> => {
+      if (!project || !projectRuntime) {
+        const message = "请先新建或打开项目";
+        setProjectMessage(message);
+        return { ok: false, message };
+      }
+
+      const contentBeats = storyBeats.filter((beat) => !isBlankStoryBeat(beat));
+      if (contentBeats.length === 0) {
+        const message = "请先填写分镜脚本";
+        setProjectMessage(message);
+        return { ok: false, message };
+      }
+
+      if (
+        replaceBeatId &&
+        !contentBeats.some((beat) => beat.id === replaceBeatId)
+      ) {
+        const message = "没有找到要替换的分镜";
+        setProjectMessage(message);
+        return { ok: false, message };
+      }
+
+      try {
+        setIsAiGeneratingStoryboard(true);
+        setProjectMessage(replaceBeatId ? "正在替换生成分镜视频..." : "正在生成分镜视频...");
+
+        const projectRootPath = projectRuntime.projectRootPath;
+        const nextProject = editorStateToProject(project, {
+          assets,
+          timelineClips,
+          storyBeats,
+          playheadSec,
+          selectedClipId
+        });
+        const savedSession = await desktopApi.project.save({
+          projectRootPath,
+          project: nextProject
+        });
+        setProject(savedSession.project);
+        setProjectRuntime(savedSession.runtime);
+        setProjectLayout(savedSession.layout);
+        setIsProjectDirty(false);
+
+        const provider = await resolveStoryboardGenerationProvider();
+        const jobs = await desktopApi.ai.generateStoryboard({
+          projectRootPath,
+          script: contentBeats.map((beat) => beat.description.trim()).join("\n"),
+          segments: contentBeats.map((beat) => ({
+            id: beat.id,
+            text: beat.description.trim(),
+            durationSec: beat.durationSec
+          })),
+          replaceSegmentId: replaceBeatId,
+          providerId: provider.providerId,
+          modelId: provider.modelId,
+          defaultDuration: DEFAULT_STORY_BEAT_DURATION_SEC,
+          aspectRatio: formatProjectAspectRatio(
+            savedSession.project.settings.width,
+            savedSession.project.settings.height
+          )
+        });
+        const refreshedSession = await desktopApi.project.open({ projectRootPath });
+        const failedJobs = jobs.filter((job) => job.status === "failed");
+        const message =
+          failedJobs.length > 0
+            ? `分镜视频有 ${failedJobs.length} 段提交失败`
+            : replaceBeatId
+              ? "已提交替换生成"
+              : `已提交 ${jobs.length} 段分镜视频生成`;
+
+        applyProjectSession(refreshedSession, message);
+        return { ok: failedJobs.length === 0, message };
+      } catch (error) {
+        const message = getErrorMessage(error);
+        setProjectMessage(message);
+        return { ok: false, message };
+      } finally {
+        setIsAiGeneratingStoryboard(false);
+      }
+    },
+    [
+      applyProjectSession,
+      assets,
+      playheadSec,
+      project,
+      projectRuntime,
+      selectedClipId,
+      storyBeats,
+      timelineClips
+    ]
+  );
 
   const commitImportedAssets = useCallback((importedAssets: EditorMediaAsset[]) => {
     if (importedAssets.length === 0) {
@@ -609,6 +706,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       isProjectOpen: Boolean(projectRuntime),
       isProjectDirty,
       isProjectSaving,
+      isAiGeneratingStoryboard,
       projectMessage,
       assets,
       timelineClips,
@@ -625,6 +723,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       createProject,
       openProjectFromPicker,
       saveProject,
+      generateStoryboardVideos,
       importFiles,
       importPaths,
       openMediaPicker,
@@ -649,10 +748,12 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       assets,
       createProject,
       deleteClip,
+      generateStoryboardVideos,
       importFiles,
       importPaths,
       isProjectDirty,
       isProjectSaving,
+      isAiGeneratingStoryboard,
       moveClip,
       nudgePlayhead,
       openMediaPicker,
@@ -692,6 +793,61 @@ export const useEditor = (): EditorContextValue => {
 
   return context;
 };
+
+interface StoryboardGenerationProvider {
+  providerId: string;
+  modelId?: string;
+}
+
+async function resolveStoryboardGenerationProvider(): Promise<StoryboardGenerationProvider> {
+  try {
+    const config = await desktopApi.config.get();
+    if (config.providers.googleVeo.enabled) {
+      return {
+        providerId: "google-veo",
+        modelId: config.providers.googleVeo.textImageModel
+      };
+    }
+
+    if (config.providers.volcengineSeedance.enabled) {
+      return {
+        providerId: "volcengine-seedance",
+        modelId: config.providers.volcengineSeedance.reqKey
+      };
+    }
+  } catch {
+    return {
+      providerId: "mock",
+      modelId: "mock-video-v1"
+    };
+  }
+
+  return {
+    providerId: "mock",
+    modelId: "mock-video-v1"
+  };
+}
+
+function formatProjectAspectRatio(width: number, height: number): string {
+  const normalizedWidth = Math.max(1, Math.round(width));
+  const normalizedHeight = Math.max(1, Math.round(height));
+  const divisor = greatestCommonDivisor(normalizedWidth, normalizedHeight);
+
+  return `${normalizedWidth / divisor}:${normalizedHeight / divisor}`;
+}
+
+function greatestCommonDivisor(first: number, second: number): number {
+  let a = Math.abs(first);
+  let b = Math.abs(second);
+
+  while (b > 0) {
+    const next = a % b;
+    a = b;
+    b = next;
+  }
+
+  return a || 1;
+}
 
 function clampPlayhead(time: number, timelineDurationSec: number): number {
   return Math.max(0, Math.min(timelineDurationSec, time));

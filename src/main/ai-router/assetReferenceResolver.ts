@@ -29,7 +29,14 @@ export class AssetReferenceResolver {
       }
     }
 
-    if (request.firstFrameAssetId) {
+    if (request.firstFrameUri || request.firstFramePath) {
+      references.push({
+        assetId: request.firstFrameAssetId ?? "external-first-frame",
+        role: "first-frame",
+        uri: request.firstFrameUri ?? pathToFileURL(request.firstFramePath!).toString(),
+        absolutePath: request.firstFramePath
+      });
+    } else if (request.firstFrameAssetId) {
       references.push({
         assetId: request.firstFrameAssetId,
         role: "first-frame",
@@ -37,29 +44,18 @@ export class AssetReferenceResolver {
       });
     }
 
-    if (request.firstFrameUri || request.firstFramePath) {
+    if (request.lastFrameUri || request.lastFramePath) {
       references.push({
-        assetId: "external-first-frame",
-        role: "first-frame",
-        uri: request.firstFrameUri ?? pathToFileURL(request.firstFramePath!).toString(),
-        absolutePath: request.firstFramePath
+        assetId: request.lastFrameAssetId ?? "external-last-frame",
+        role: "last-frame",
+        uri: request.lastFrameUri ?? pathToFileURL(request.lastFramePath!).toString(),
+        absolutePath: request.lastFramePath
       });
-    }
-
-    if (request.lastFrameAssetId) {
+    } else if (request.lastFrameAssetId) {
       references.push({
         assetId: request.lastFrameAssetId,
         role: "last-frame",
         uri: `aiv-frame://${request.lastFrameAssetId}/last`
-      });
-    }
-
-    if (request.lastFrameUri || request.lastFramePath) {
-      references.push({
-        assetId: "external-last-frame",
-        role: "last-frame",
-        uri: request.lastFrameUri ?? pathToFileURL(request.lastFramePath!).toString(),
-        absolutePath: request.lastFramePath
       });
     }
 

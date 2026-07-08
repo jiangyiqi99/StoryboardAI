@@ -533,12 +533,6 @@ export const Preview = () => {
           <span>⌄</span>
         </button>
         <div className="preview-controls">
-          <button className="preview-control fit" type="button">
-            <span>适合窗口</span>
-          </button>
-          <button className="preview-control scale" type="button">
-            <span>1/4</span>
-          </button>
           <button className="preview-control icon" title="截图" type="button">
             <Camera size={17} />
           </button>

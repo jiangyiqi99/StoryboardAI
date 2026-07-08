@@ -164,7 +164,8 @@ const projectTimelineToEditorClips = (
         durationSec,
         sourceIn: clip.sourceIn,
         sourceOut: clip.sourceOut,
-        linkedClipId: readLinkedClipId(clip)
+        linkedClipId: readLinkedClipId(clip),
+        metadata: clip.metadata
       };
     })
   );
@@ -203,9 +204,10 @@ const editorClipToProjectClip = (clip: EditorTimelineClip): Clip => {
   const timelineEnd = roundTimelineTime(clip.timelineStart + clip.durationSec);
   const metadata = clip.linkedClipId
     ? {
+        ...(clip.metadata ?? {}),
         linkedClipId: clip.linkedClipId
       }
-    : undefined;
+    : clip.metadata;
 
   return {
     id: clip.id,

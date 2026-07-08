@@ -123,10 +123,18 @@ export interface MediaRenderTimelineRequest {
 export interface AiGenerateStoryboardRequest {
   projectRootPath: string;
   script: string;
+  segments?: AiStoryboardSegmentInput[];
+  replaceSegmentId?: string;
   providerId: string;
   modelId?: string;
   defaultDuration: number;
   aspectRatio: string;
+}
+
+export interface AiStoryboardSegmentInput {
+  id: string;
+  text: string;
+  durationSec: number;
 }
 
 export interface AiReplaceRangeRequest {

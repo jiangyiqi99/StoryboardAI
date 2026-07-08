@@ -827,6 +827,38 @@ button {
   font-size: 12px;
 }
 
+.story-script-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.story-generate-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #7955ee, #6138d8);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.story-generate-button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.story-generate-button:disabled,
+.story-regenerate-button:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
 .story-script-total {
   display: flex;
   align-items: center;
@@ -853,7 +885,7 @@ button {
 
 .story-script-row {
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) 72px;
+  grid-template-columns: 26px minmax(0, 1fr) 72px 32px;
   gap: 8px;
   align-items: stretch;
   min-width: 0;
@@ -963,6 +995,23 @@ button {
   text-align: right;
 }
 
+.story-regenerate-button {
+  display: grid;
+  width: 32px;
+  min-height: 58px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #b9c3d0;
+}
+
+.story-regenerate-button:hover:not(:disabled) {
+  border-color: rgba(139, 101, 255, 0.52);
+  background: rgba(118, 84, 237, 0.12);
+  color: #efeafe;
+}
+
 .audio-thumb {
   display: grid;
   width: 100%;
@@ -1023,7 +1072,7 @@ button {
 
 .preview-head {
   --preview-control-safe-right: 40px;
-  --preview-control-width: 210px;
+  --preview-control-width: 32px;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1081,14 +1130,6 @@ button {
 .preview-control.icon {
   flex: 0 0 32px;
   padding: 0;
-}
-
-.preview-control.scale {
-  flex: 0 0 54px;
-}
-
-.preview-control.fit {
-  flex: 1 1 72px;
 }
 
 .preview-control span {

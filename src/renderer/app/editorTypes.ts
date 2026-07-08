@@ -44,6 +44,7 @@ export interface EditorTimelineClip {
   sourceIn: number;
   sourceOut: number;
   linkedClipId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface EditorStoryBeat {
