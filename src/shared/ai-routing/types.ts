@@ -26,7 +26,15 @@ export type ProviderAuthMode =
 export interface ReferenceImageInput {
   assetId?: string;
   uri?: string;
-  role?: "reference" | "style" | "character" | "composition";
+  absolutePath?: string;
+  mimeType?: string;
+  role?:
+    | "reference"
+    | "style"
+    | "character"
+    | "composition"
+    | "first-frame"
+    | "last-frame";
   weight?: number;
 }
 
@@ -49,9 +57,17 @@ export interface GenerateVideoRequest {
   cameraMotion?: string;
   referenceImages?: ReferenceImageInput[];
   firstFrameAssetId?: string;
+  firstFrameUri?: string;
+  firstFramePath?: string;
   lastFrameAssetId?: string;
+  lastFrameUri?: string;
+  lastFramePath?: string;
   inputVideoAssetId?: string;
+  inputVideoUri?: string;
+  inputVideoPath?: string;
   maskAssetId?: string;
+  maskUri?: string;
+  maskPath?: string;
   metadata?: Record<string, unknown>;
 }
 

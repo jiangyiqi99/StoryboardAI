@@ -1,36 +1,43 @@
 import type { AivDesktopApi } from "@shared/ipc/desktop-api";
 
+const DESKTOP_FILE_ACCESS_ERROR = "请使用桌面应用访问文件";
+
 const createUnavailableDesktopApi = (): AivDesktopApi => {
-  const rejectUnavailable = () =>
-    Promise.reject(new Error("桌面 API 暂不可用，请使用本地文件选择导入素材。"));
+  const rejectDesktopUnavailable = () =>
+    Promise.reject(new Error(DESKTOP_FILE_ACCESS_ERROR));
 
   return {
+    config: {
+      get: rejectDesktopUnavailable,
+      save: rejectDesktopUnavailable
+    },
     project: {
-      create: rejectUnavailable,
-      open: rejectUnavailable,
-      save: rejectUnavailable
+      create: rejectDesktopUnavailable,
+      open: rejectDesktopUnavailable,
+      save: rejectDesktopUnavailable
     },
     media: {
-      probe: rejectUnavailable,
-      importFiles: rejectUnavailable,
-      selectFiles: rejectUnavailable,
-      extractFrame: rejectUnavailable,
-      extractPreviewFrame: rejectUnavailable,
-      renderTimeline: rejectUnavailable,
+      probe: rejectDesktopUnavailable,
+      importFiles: rejectDesktopUnavailable,
+      selectFiles: rejectDesktopUnavailable,
+      extractFrame: rejectDesktopUnavailable,
+      extractPreviewFrame: rejectDesktopUnavailable,
+      renderTimeline: rejectDesktopUnavailable,
       getPathForFile: () => {
-        throw new Error("桌面 API 暂不可用");
+        throw new Error(DESKTOP_FILE_ACCESS_ERROR);
       }
     },
     ai: {
-      generateStoryboard: rejectUnavailable,
-      replaceRange: rejectUnavailable,
-      getJobStatus: rejectUnavailable
+      generateVideo: rejectDesktopUnavailable,
+      generateStoryboard: rejectDesktopUnavailable,
+      replaceRange: rejectDesktopUnavailable,
+      getJobStatus: rejectDesktopUnavailable
     }
   };
 };
 
 export const isDesktopApiAvailable = (): boolean => {
-  return Boolean(window.aiv?.media);
+  return Boolean(window.aiv);
 };
 
 export const desktopApi: AivDesktopApi = window.aiv ?? createUnavailableDesktopApi();

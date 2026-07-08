@@ -3,7 +3,7 @@ import {
   Download,
   Film,
   Folder,
-  Sparkles,
+  Settings,
   X
 } from "lucide-react";
 import { useState } from "react";
@@ -15,6 +15,7 @@ import {
 import { AIAssetsPanel } from "../components/ai-assets";
 import { Inspector } from "../components/inspector";
 import { MediaBin } from "../components/media-bin";
+import { ModelSettingsPanel } from "../components/model-settings";
 import { Preview } from "../components/preview";
 import { ReplaceSelectionPanel } from "../components/replace-selection";
 import { StoryScriptPanel } from "../components/story-script";
@@ -22,7 +23,7 @@ import { StoryboardPanel } from "../components/storyboard";
 import { Timeline } from "../components/timeline";
 import { EditorProvider } from "./EditorContext";
 
-type LeftTool = "media-bin" | "story-script" | "assets" | "ai-tools";
+type LeftTool = "media-bin" | "story-script" | "assets" | "model-settings";
 
 const toolItems: Array<{
   key: LeftTool;
@@ -32,7 +33,7 @@ const toolItems: Array<{
   { key: "media-bin", label: "媒体库", icon: Folder },
   { key: "story-script", label: "分镜脚本", icon: Film },
   { key: "assets", label: "AI 素材", icon: Folder },
-  { key: "ai-tools", label: "AI 工具", icon: Sparkles }
+  { key: "model-settings", label: "模型设置", icon: Settings }
 ];
 
 export const App = () => {
@@ -106,6 +107,8 @@ export const App = () => {
                 <StoryScriptPanel />
               ) : activeTool === "assets" ? (
                 <AIAssetsPanel />
+              ) : activeTool === "model-settings" ? (
+                <ModelSettingsPanel />
               ) : (
                 <MediaBin />
               )}

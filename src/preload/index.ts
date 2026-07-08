@@ -11,6 +11,10 @@ const invoke = <TChannel extends keyof IpcInvokeMap>(
 };
 
 export const desktopApi: AivDesktopApi = {
+  config: {
+    get: (request = {}) => invoke(IPC_CHANNELS.APP_CONFIG_GET, request),
+    save: (request) => invoke(IPC_CHANNELS.APP_CONFIG_SAVE, request)
+  },
   project: {
     create: (request) => invoke(IPC_CHANNELS.PROJECT_CREATE, request),
     open: (request) => invoke(IPC_CHANNELS.PROJECT_OPEN, request),
@@ -29,6 +33,7 @@ export const desktopApi: AivDesktopApi = {
     getPathForFile: (file) => webUtils.getPathForFile(file)
   },
   ai: {
+    generateVideo: (request) => invoke(IPC_CHANNELS.AI_GENERATE_VIDEO, request),
     generateStoryboard: (request) =>
       invoke(IPC_CHANNELS.AI_GENERATE_STORYBOARD, request),
     replaceRange: (request) => invoke(IPC_CHANNELS.AI_REPLACE_RANGE, request),

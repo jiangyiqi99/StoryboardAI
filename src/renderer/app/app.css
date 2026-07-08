@@ -297,6 +297,12 @@ button {
   color: #f3f6fb;
 }
 
+.panel-subtitle {
+  margin: 4px 0 0;
+  color: #87919d;
+  font-size: 12px;
+}
+
 .panel-heading {
   justify-content: space-between;
   gap: 12px;
@@ -510,6 +516,187 @@ button {
 .ai-duration-field {
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.model-settings-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.provider-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.provider-empty-state {
+  display: grid;
+  min-height: 190px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 18px;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.018);
+  color: #8f99a5;
+  text-align: center;
+}
+
+.provider-empty-state h3 {
+  margin: 0;
+  color: #e7ecf3;
+  font-size: 14px;
+}
+
+.provider-empty-state p {
+  max-width: 260px;
+  margin: 0;
+  color: #8c96a3;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.provider-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.provider-card-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 7px;
+  background: rgba(118, 84, 237, 0.16);
+  color: #ad92ff;
+}
+
+.provider-card-body {
+  min-width: 0;
+}
+
+.provider-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.provider-card h3 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #f1f5fa;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-card p {
+  margin: 4px 0 10px;
+  color: #98a2ae;
+  font-size: 12px;
+}
+
+.provider-status {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(255, 183, 77, 0.11);
+  color: #f0bd73;
+  font-size: 11px;
+}
+
+.provider-status.is-configured {
+  background: rgba(76, 203, 137, 0.13);
+  color: #7edda9;
+}
+
+.provider-card dl {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.provider-card dl div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 7px;
+  min-width: 0;
+  color: #aeb7c3;
+  font-size: 11px;
+}
+
+.provider-card dt,
+.provider-card dd {
+  min-width: 0;
+}
+
+.provider-card dt {
+  color: #717b88;
+}
+
+.provider-card dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-card-actions {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.provider-card-actions .ghost-button {
+  grid-column: 2;
+  justify-self: start;
+}
+
+.ghost-button.danger {
+  border-color: rgba(255, 99, 99, 0.18);
+  color: #ffb6b6;
+}
+
+.ghost-button.danger:hover {
+  background: rgba(255, 99, 99, 0.1);
+}
+
+.settings-message,
+.settings-error {
+  margin: 0;
+  color: #858f9b;
+  font-size: 12px;
+}
+
+.settings-message.is-loading {
+  color: #b8c2cf;
+}
+
+.settings-error {
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 99, 99, 0.22);
+  border-radius: 6px;
+  background: rgba(255, 99, 99, 0.08);
+  color: #ffb6b6;
 }
 
 .asset-thumb img,
@@ -1251,6 +1438,22 @@ button {
   width: min(460px, 100%);
 }
 
+.provider-dialog {
+  width: min(720px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow-y: auto;
+}
+
+.provider-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.provider-form-grid .export-field {
+  min-width: 0;
+}
+
 .solid-color-picker {
   display: grid;
   grid-template-columns: 118px minmax(0, 1fr);
@@ -1392,6 +1595,12 @@ button {
   grid-template-rows: 48px minmax(0, 1fr);
   margin: 0 8px 8px 0;
   overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .provider-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .timeline-toolbar {

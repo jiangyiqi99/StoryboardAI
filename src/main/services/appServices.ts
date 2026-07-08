@@ -4,8 +4,10 @@ import { createDefaultProviderAdapters } from "@main/providers";
 import { createMediaEngineFacade } from "@media-engine/index";
 import { LocalProjectFileService } from "@project-system/projectFile";
 import type { MediaEngineFacade } from "@shared/types/media-engine";
+import { LocalAppConfigService } from "./appConfigService";
 
 export interface AppServices {
+  appConfig: LocalAppConfigService;
   projectFiles: LocalProjectFileService;
   mediaEngine: MediaEngineFacade;
   apiRouter: ApiRouter;
@@ -13,10 +15,11 @@ export interface AppServices {
 }
 
 export const createAppServices = (): AppServices => {
+  const appConfig = new LocalAppConfigService();
   const projectFiles = new LocalProjectFileService();
   const mediaEngine = createMediaEngineFacade();
   const apiRouter = new ApiRouter({
-    providers: createDefaultProviderAdapters()
+    providers: createDefaultProviderAdapters(appConfig)
   });
   const aiOrchestrator = new AiOrchestrator({
     projectFiles,
@@ -25,6 +28,7 @@ export const createAppServices = (): AppServices => {
   });
 
   return {
+    appConfig,
     projectFiles,
     mediaEngine,
     apiRouter,

@@ -1,3 +1,12 @@
+import type {
+  GenerateVideoRequest,
+  GenerateVideoResponse
+} from "../ai-routing";
+import type {
+  AppConfig,
+  AppConfigGetRequest,
+  AppConfigSaveRequest
+} from "../types/app-config";
 import type { AiGenerationJob } from "../types/ai";
 import type { AssetMetadata } from "../types/asset";
 import type { Project, ProjectSettings } from "../types/project";
@@ -90,6 +99,8 @@ export interface AiGetJobStatusRequest {
   providerId: string;
 }
 
+export type AiGenerateVideoRequest = GenerateVideoRequest;
+
 export interface IpcInvokeMap {
   "project:create": {
     request: ProjectCreateRequest;
@@ -126,6 +137,18 @@ export interface IpcInvokeMap {
   "media:renderTimeline": {
     request: MediaRenderTimelineRequest;
     response: string;
+  };
+  "appConfig:get": {
+    request: AppConfigGetRequest;
+    response: AppConfig;
+  };
+  "appConfig:save": {
+    request: AppConfigSaveRequest;
+    response: AppConfig;
+  };
+  "ai:generateVideo": {
+    request: AiGenerateVideoRequest;
+    response: GenerateVideoResponse;
   };
   "ai:generateStoryboard": {
     request: AiGenerateStoryboardRequest;

@@ -1,4 +1,5 @@
 export * from "./ai";
+export * from "./app-config";
 export * from "./asset";
 export * from "./editing";
 export * from "./media-engine";

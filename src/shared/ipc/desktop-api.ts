@@ -1,4 +1,5 @@
 import type {
+  AiGenerateVideoRequest,
   AiGenerateStoryboardRequest,
   AiGetJobStatusRequest,
   AiReplaceRangeRequest,
@@ -14,11 +15,21 @@ import type {
   ProjectOpenRequest,
   ProjectSaveRequest
 } from "./contracts";
+import type { GenerateVideoResponse } from "../ai-routing";
+import type {
+  AppConfig,
+  AppConfigGetRequest,
+  AppConfigSaveRequest
+} from "../types/app-config";
 import type { AiGenerationJob } from "../types/ai";
 import type { AssetMetadata } from "../types/asset";
 import type { Project } from "../types/project";
 
 export interface AivDesktopApi {
+  config: {
+    get(request?: AppConfigGetRequest): Promise<AppConfig>;
+    save(request: AppConfigSaveRequest): Promise<AppConfig>;
+  };
   project: {
     create(request: ProjectCreateRequest): Promise<Project>;
     open(request: ProjectOpenRequest): Promise<Project>;
@@ -36,6 +47,7 @@ export interface AivDesktopApi {
     getPathForFile(file: File): string;
   };
   ai: {
+    generateVideo(request: AiGenerateVideoRequest): Promise<GenerateVideoResponse>;
     generateStoryboard(
       request: AiGenerateStoryboardRequest
     ): Promise<AiGenerationJob[]>;

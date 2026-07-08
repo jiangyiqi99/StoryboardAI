@@ -8,6 +8,9 @@ export const IPC_CHANNELS = {
   MEDIA_EXTRACT_FRAME: "media:extractFrame",
   MEDIA_EXTRACT_PREVIEW_FRAME: "media:extractPreviewFrame",
   MEDIA_RENDER_TIMELINE: "media:renderTimeline",
+  APP_CONFIG_GET: "appConfig:get",
+  APP_CONFIG_SAVE: "appConfig:save",
+  AI_GENERATE_VIDEO: "ai:generateVideo",
   AI_GENERATE_STORYBOARD: "ai:generateStoryboard",
   AI_REPLACE_RANGE: "ai:replaceRange",
   AI_GET_JOB_STATUS: "ai:getJobStatus"
