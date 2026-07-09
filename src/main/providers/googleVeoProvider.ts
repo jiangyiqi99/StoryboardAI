@@ -165,21 +165,11 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     const client = new GoogleVeoRestClient(config);
-    logGoogleVeo("getJobStatus:start", {
-      providerJobId,
-      modelId,
-      operationName
-    });
     const result = await client.post(modelId, "fetchPredictOperation", {
       operationName
     });
 
     if (!result.done) {
-      logGoogleVeo("getJobStatus:running", {
-        providerJobId,
-        operationName,
-        rawResponsePreview: compactLogValue(result)
-      });
       return {
         providerId: this.providerId,
         providerJobId,
@@ -189,12 +179,6 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     if (result.error) {
-      logGoogleVeo("getJobStatus:failed", {
-        providerJobId,
-        operationName,
-        error: result.error,
-        rawResponsePreview: compactLogValue(result)
-      });
       return {
         providerId: this.providerId,
         providerJobId,
@@ -210,13 +194,6 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     const outputs = await extractGoogleVeoByteOutputs(result);
-    logGoogleVeo("getJobStatus:succeeded", {
-      providerJobId,
-      operationName,
-      outputCount: outputs.length,
-      outputUri: outputs[0],
-      rawResponsePreview: compactLogValue(result)
-    });
     return {
       providerId: this.providerId,
       providerJobId,
@@ -325,11 +302,14 @@ class GoogleVeoRestClient {
   ): Promise<Record<string, unknown>> {
     const url = new URL(`${this.baseUrl()}/${this.modelPath(modelId)}:${method}`);
     url.searchParams.set("key", this.config.apiKey);
-    logGoogleVeo("http:start", {
-      method: "POST",
-      url: redactGoogleApiKey(url),
-      bodyBytes: Buffer.byteLength(JSON.stringify(body), "utf8")
-    });
+    const shouldLogHttp = method !== "fetchPredictOperation";
+    if (shouldLogHttp) {
+      logGoogleVeo("http:start", {
+        method: "POST",
+        url: redactGoogleApiKey(url),
+        bodyBytes: Buffer.byteLength(JSON.stringify(body), "utf8")
+      });
+    }
 
     const response = await fetch(url, {
       method: "POST",
@@ -340,13 +320,15 @@ class GoogleVeoRestClient {
       signal: AbortSignal.timeout(this.config.timeoutMs)
     });
     const responseText = await response.text();
-    logGoogleVeo("http:response", {
-      method: "POST",
-      url: redactGoogleApiKey(url),
-      httpStatus: response.status,
-      ok: response.ok,
-      responseBytes: Buffer.byteLength(responseText, "utf8")
-    });
+    if (shouldLogHttp) {
+      logGoogleVeo("http:response", {
+        method: "POST",
+        url: redactGoogleApiKey(url),
+        httpStatus: response.status,
+        ok: response.ok,
+        responseBytes: Buffer.byteLength(responseText, "utf8")
+      });
+    }
     let payload: Record<string, unknown>;
 
     try {

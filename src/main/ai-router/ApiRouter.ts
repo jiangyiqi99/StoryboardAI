@@ -153,24 +153,8 @@ export class ApiRouter implements ApiRouterContract {
   async getJobStatus(
     request: GetGenerationJobStatusRequest
   ): Promise<GenerateVideoResponse> {
-    logAiRouter("getJobStatus:start", request);
     const adapter = this.providerRegistry.get(request.providerId);
-    logAiRouter("getJobStatus:provider:start", {
-      adapterClass: adapter.constructor.name,
-      providerId: adapter.providerId,
-      providerJobId: request.providerJobId
-    });
     const providerJob = await adapter.getJobStatus(request.providerJobId);
-    logAiRouter("getJobStatus:provider:done", {
-      adapterClass: adapter.constructor.name,
-      providerId: providerJob.providerId,
-      providerJobId: providerJob.providerJobId,
-      status: providerJob.status,
-      progress: providerJob.progress,
-      outputUri: providerJob.outputUri,
-      error: providerJob.error,
-      rawResponsePreview: redactLargeValues(providerJob.rawResponse)
-    });
 
     return {
       jobId: request.jobId,

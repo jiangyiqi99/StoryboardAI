@@ -284,8 +284,11 @@ function stageProgressWeight(stage: string): number {
     case "task-created":
     case "waiting-output":
       return 0.4;
+    case "polling-start":
     case "polling":
       return 0.58;
+    case "polling-complete":
+      return 0.7;
     case "output-ready":
     case "saving-output":
       return 0.78;

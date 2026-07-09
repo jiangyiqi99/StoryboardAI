@@ -173,10 +173,6 @@ export class SeedanceProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     const client = new SeedanceRestClient(config);
-    logSeedance("getJobStatus:start", {
-      providerJobId,
-      taskId
-    });
     const result = await client.getTask(taskId);
     const outputs = await extractVideoOutputs(result, this.providerId);
     const status = parseSeedanceStatus(result, outputs);
@@ -184,16 +180,6 @@ export class SeedanceProviderAdapter extends BaseCloudProviderAdapter {
       status === "failed"
         ? firstStringByKeys(result, ["message", "error", "error_message", "code"])
         : undefined;
-    logSeedance("getJobStatus:parsed", {
-      providerJobId,
-      taskId,
-      status,
-      outputCount: outputs.length,
-      outputUri: outputs[0],
-      progress: firstNumberByKeys(result, ["progress", "percent"]),
-      errorMessage,
-      rawResponsePreview: compactLogValue(result)
-    });
 
     return {
       providerId: this.providerId,
@@ -315,11 +301,14 @@ class SeedanceRestClient {
   ): Promise<Record<string, unknown>> {
     const bodyText = body ? JSON.stringify(body) : undefined;
     const url = this.url(path);
-    logSeedance("http:start", {
-      method,
-      url,
-      bodyBytes: bodyText ? Buffer.byteLength(bodyText, "utf8") : 0
-    });
+    const shouldLogHttp = method !== "GET";
+    if (shouldLogHttp) {
+      logSeedance("http:start", {
+        method,
+        url,
+        bodyBytes: bodyText ? Buffer.byteLength(bodyText, "utf8") : 0
+      });
+    }
     const response = await fetch(url, {
       method,
       body: bodyText ? Buffer.from(bodyText, "utf8") : undefined,
@@ -330,32 +319,47 @@ class SeedanceRestClient {
       signal: AbortSignal.timeout(this.config.timeoutMs)
     });
     const responseText = await response.text();
-    logSeedance("http:response", {
-      method,
-      url,
-      httpStatus: response.status,
-      ok: response.ok,
-      responseBytes: Buffer.byteLength(responseText, "utf8")
-    });
+    if (shouldLogHttp) {
+      logSeedance("http:response", {
+        method,
+        url,
+        httpStatus: response.status,
+        ok: response.ok,
+        responseBytes: Buffer.byteLength(responseText, "utf8")
+      });
+    }
     const payload = parseJsonResponse(responseText, response.status);
 
     if (response.status >= 400) {
+      const providerMessage = arkErrorMessage(payload, `Seedance HTTP ${response.status}`);
       throw new AiRoutingError({
         code: response.status === 429 ? "PROVIDER_UNAVAILABLE" : "PROVIDER_ERROR",
-        message: arkErrorMessage(payload, `Seedance HTTP ${response.status}`),
+        message: normalizeSeedanceErrorMessage(providerMessage),
         providerId: capabilities.providerId,
         retryable: response.status === 429 || response.status >= 500,
-        details: { httpStatus: response.status, response: payload }
+        details: {
+          httpStatus: response.status,
+          response: payload,
+          reason: seedanceErrorReason(providerMessage)
+        }
       });
     }
 
     if (payload.error) {
+      const providerMessage = arkErrorMessage(
+        payload,
+        "Seedance provider returned an error."
+      );
       throw new AiRoutingError({
         code: "PROVIDER_ERROR",
-        message: arkErrorMessage(payload, "Seedance provider returned an error."),
+        message: normalizeSeedanceErrorMessage(providerMessage),
         providerId: capabilities.providerId,
         retryable: false,
-        details: { httpStatus: response.status, response: payload }
+        details: {
+          httpStatus: response.status,
+          response: payload,
+          reason: seedanceErrorReason(providerMessage)
+        }
       });
     }
 
@@ -398,6 +402,26 @@ const arkErrorMessage = (
   }
 
   return firstStringByKeys(payload, ["message", "error_message"]) ?? fallback;
+};
+
+const seedanceErrorReason = (message: string): string | undefined => {
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes("input image") &&
+    normalized.includes("real person")
+  ) {
+    return "INPUT_IMAGE_MAY_CONTAIN_REAL_PERSON";
+  }
+
+  return undefined;
+};
+
+const normalizeSeedanceErrorMessage = (message: string): string => {
+  if (seedanceErrorReason(message) === "INPUT_IMAGE_MAY_CONTAIN_REAL_PERSON") {
+    return "Seedance 拒绝了首帧参考图：图片可能包含真人，无法用于 image-to-video / first-frame-to-video。上一段视频已生成成功，但下一段连续生成被 provider 拦截。";
+  }
+
+  return message;
 };
 
 const logSeedance = (stage: string, details: Record<string, unknown>): void => {

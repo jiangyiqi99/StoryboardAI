@@ -171,16 +171,12 @@ export class StoryboardToTimelineWorkflow {
                 "first"
             )
           : undefined;
-        if (
-          previousSegment &&
-          hasStoryboardOutput(nextProject, previousSegment.input.id) &&
-          !previousBoundary
-        ) {
+        if (previousSegment && !previousBoundary) {
           const failedJob = createLocalFailedGenerationJob({
             request,
             plannedSegment,
             message:
-              "上一段视频已存在，但无法抽取尾帧作为当前段首帧，已停止生成以避免画面不连续。",
+              "当前段需要上一段尾帧作为首帧，但未能取得参考帧，已停止生成以避免画面不连续。",
             now
           });
           jobs.push(failedJob);
@@ -202,7 +198,11 @@ export class StoryboardToTimelineWorkflow {
             jobId: failedJob.id,
             status: failedJob.status,
             details: {
-              previousSegmentId: previousSegment.input.id
+              previousSegmentId: previousSegment.input.id,
+              previousSegmentHasOutput: hasStoryboardOutput(
+                nextProject,
+                previousSegment.input.id
+              )
             }
           });
           break;
@@ -258,6 +258,57 @@ export class StoryboardToTimelineWorkflow {
             error: submittedResponse.error
           }
         });
+        if (isTerminalFailedGeneration(submittedResponse)) {
+          const finalJob: AiGenerationJob = {
+            ...createGenerationJob(
+              submittedResponse,
+              generationRequest,
+              plannedSegment,
+              request,
+              now
+            ),
+            status: "failed",
+            outputAssetId: undefined,
+            errorMessage:
+              submittedResponse.error?.message ??
+              `生成任务创建失败，状态：${submittedResponse.status}`
+          };
+          jobs.push(finalJob);
+          nextProject.aiGenerationJobs = upsertById(
+            nextProject.aiGenerationJobs,
+            finalJob
+          );
+          nextProject.storyboardSegments = updateSegmentAfterFailedGeneration(
+            nextProject.storyboardSegments,
+            plannedSegment,
+            finalJob
+          );
+          stoppedOnFailure = true;
+          this.emitSegmentProgress(options, request, plannedSegment, plannedSegments.length, {
+            stage: "error",
+            message: finalJob.errorMessage ?? "生成任务创建失败",
+            providerId: submittedResponse.providerId,
+            modelId: submittedResponse.modelId,
+            jobId: submittedResponse.jobId,
+            providerJobId: submittedResponse.providerJobId,
+            status: finalJob.status,
+            details: {
+              mode: submittedResponse.mode,
+              error: submittedResponse.error,
+              route: submittedResponse.route
+            }
+          });
+          this.emitSegmentProgress(options, request, plannedSegment, plannedSegments.length, {
+            stage: "segment-complete",
+            message: `第 ${plannedSegment.index + 1}/${plannedSegments.length} 个片段处理完成（任务创建失败，已停止）`,
+            providerId: submittedResponse.providerId,
+            modelId: submittedResponse.modelId,
+            jobId: submittedResponse.jobId,
+            providerJobId: submittedResponse.providerJobId,
+            status: finalJob.status
+          });
+          break;
+        }
         this.emitSegmentProgress(options, request, plannedSegment, plannedSegments.length, {
           stage: "waiting-output",
           message: "等待生成结果输出",
@@ -523,32 +574,44 @@ export class StoryboardToTimelineWorkflow {
 
     const deadline = Date.now() + GENERATION_POLL_TIMEOUT_MS;
     let latestResponse = response;
+    let pollCount = 0;
+
+    this.emitSegmentProgress(options, workflowRequest, plannedSegment, segmentCount, {
+      stage: "polling-start",
+      message: "开始轮询生成任务状态",
+      providerId: response.providerId,
+      modelId: response.modelId,
+      jobId: response.jobId,
+      providerJobId: response.providerJobId,
+      status: response.status
+    });
 
     while (Date.now() < deadline) {
       await delay(GENERATION_POLL_INTERVAL_MS);
+      pollCount += 1;
       const polledResponse = await this.services.apiRouter.getJobStatus({
         jobId: response.jobId,
         providerId: response.providerId,
         providerJobId: response.providerJobId
       });
       latestResponse = mergePolledGenerationResponse(response, polledResponse);
-      this.emitSegmentProgress(options, workflowRequest, plannedSegment, segmentCount, {
-        stage: "polling",
-        message: "已轮询生成任务状态",
-        providerId: latestResponse.providerId,
-        modelId: latestResponse.modelId,
-        jobId: latestResponse.jobId,
-        providerJobId: latestResponse.providerJobId,
-        status: latestResponse.status,
-        outputUri: latestResponse.outputUri,
-        progress: latestResponse.progress,
-        details: {
-          error: latestResponse.error,
-          rawProviderResponse: latestResponse.rawProviderResponse
-        }
-      });
 
       if (!shouldPollGeneration(latestResponse)) {
+        this.emitSegmentProgress(options, workflowRequest, plannedSegment, segmentCount, {
+          stage: "polling-complete",
+          message: "轮询结束",
+          providerId: latestResponse.providerId,
+          modelId: latestResponse.modelId,
+          jobId: latestResponse.jobId,
+          providerJobId: latestResponse.providerJobId,
+          status: latestResponse.status,
+          outputUri: latestResponse.outputUri,
+          progress: latestResponse.progress,
+          details: {
+            pollCount,
+            error: latestResponse.error
+          }
+        });
         return latestResponse;
       }
     }
@@ -677,6 +740,10 @@ function shouldPollGeneration(response: GenerateVideoResponse): boolean {
 
 function isTerminalGenerationStatus(status: GenerationJobStatus): boolean {
   return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function isTerminalFailedGeneration(response: GenerateVideoResponse): boolean {
+  return response.status === "failed" || response.status === "cancelled";
 }
 
 function mergePolledGenerationResponse(
