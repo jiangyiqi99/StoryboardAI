@@ -13,6 +13,8 @@ export type StoryboardSegmentStatus =
 export interface StoryboardSegment {
   id: StoryboardSegmentId;
   index: number;
+  storyboardRef?: string;
+  storyboardNumber?: number;
   text: string;
   prompt?: string;
   targetDuration: number;

@@ -1,6 +1,7 @@
 import type {
   AiGenerateVideoRequest,
   AiGenerateStoryboardRequest,
+  AiStoryboardProgressEvent,
   AiGetJobStatusRequest,
   AiReplaceRangeRequest,
   ImportedMediaFile,
@@ -61,6 +62,9 @@ export interface AivDesktopApi {
     generateStoryboard(
       request: AiGenerateStoryboardRequest
     ): Promise<AiGenerationJob[]>;
+    onStoryboardProgress(
+      listener: (event: AiStoryboardProgressEvent) => void
+    ): () => void;
     replaceRange(request: AiReplaceRangeRequest): Promise<AiGenerationJob>;
     getJobStatus(request: AiGetJobStatusRequest): Promise<AiGenerationJob>;
   };

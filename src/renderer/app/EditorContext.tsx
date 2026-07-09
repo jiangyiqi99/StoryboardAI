@@ -3,10 +3,12 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState
 } from "react";
 import type {
+  AiStoryboardProgressEvent,
   ProjectCreateRequest,
   ProjectRuntimeLayout,
   ProjectSession
@@ -61,12 +63,14 @@ interface EditorContextValue {
   isProjectDirty: boolean;
   isProjectSaving: boolean;
   isAiGeneratingStoryboard: boolean;
+  storyboardGenerationProgress?: AiStoryboardProgressEvent;
   projectMessage?: string;
   assets: EditorMediaAsset[];
   timelineClips: EditorTimelineClip[];
   selectedAssetId?: string;
   selectedClipId?: string;
   storyBeats: EditorStoryBeat[];
+  selectedStoryBeatIdsForGeneration: string[];
   timelineDurationSec: number;
   timelineFps?: number;
   playheadSec: number;
@@ -84,6 +88,7 @@ interface EditorContextValue {
   selectAsset(assetId: string): void;
   selectClip(clipId: string): void;
   updateStoryBeat(beatId: string, changes: Partial<Omit<EditorStoryBeat, "id">>): void;
+  toggleStoryBeatGenerationSelection(beatId: string): void;
   moveStoryBeat(beatId: string, targetBeatId: string): void;
   addAssetToTimeline(
     assetId: string,
@@ -123,6 +128,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
   const [isProjectDirty, setIsProjectDirty] = useState(false);
   const [isProjectSaving, setIsProjectSaving] = useState(false);
   const [isAiGeneratingStoryboard, setIsAiGeneratingStoryboard] = useState(false);
+  const [storyboardGenerationProgress, setStoryboardGenerationProgress] =
+    useState<AiStoryboardProgressEvent | undefined>();
   const [projectMessage, setProjectMessage] = useState<string | undefined>();
   const [assets, setAssets] = useState<EditorMediaAsset[]>(initialAssets);
   const [timelineClips, setTimelineClips] =
@@ -130,6 +137,10 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
   const [storyBeats, setStoryBeats] = useState<EditorStoryBeat[]>(() => [
     createBlankStoryBeat()
   ]);
+  const [
+    selectedStoryBeatIdsForGeneration,
+    setSelectedStoryBeatIdsForGeneration
+  ] = useState<string[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState<string | undefined>();
   const [selectedClipId, setSelectedClipId] = useState<string | undefined>();
   const [playheadSec, setPlayheadSec] = useState<number>(0);
@@ -167,6 +178,13 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     setProjectMessage(undefined);
   }, [projectRuntime]);
 
+  useEffect(() => {
+    return desktopApi.ai.onStoryboardProgress((event) => {
+      setStoryboardGenerationProgress(event);
+      setProjectMessage(formatStoryboardProgressMessage(event));
+    });
+  }, []);
+
   const applyProjectSession = useCallback(
     (
       session: Awaited<ReturnType<typeof desktopApi.project.open>>,
@@ -183,6 +201,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       setAssets(editorState.assets);
       setTimelineClips(editorState.timelineClips);
       setStoryBeats(editorState.storyBeats);
+      setSelectedStoryBeatIdsForGeneration([]);
       setSelectedClipId(editorState.selectedClipId);
       setSelectedAssetId(selectedClip?.assetId ?? editorState.assets[0]?.id);
       setPlayheadSec(editorState.playheadSec);
@@ -343,8 +362,23 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         return { ok: false, message };
       }
 
+      const targetSegmentIds = replaceBeatId
+        ? [replaceBeatId]
+        : resolveStoryboardTargetSegmentIds({
+            project,
+            contentBeats,
+            assets,
+            selectedStoryBeatIdsForGeneration
+          });
+      if (targetSegmentIds.length === 0) {
+        const message = "没有勾选分镜，也没有缺失的视频需要生成";
+        setProjectMessage(message);
+        return { ok: true, message };
+      }
+
       try {
         setIsAiGeneratingStoryboard(true);
+        setStoryboardGenerationProgress(undefined);
         setProjectMessage(replaceBeatId ? "正在替换生成分镜视频..." : "正在生成分镜视频...");
 
         const projectRootPath = projectRuntime.projectRootPath;
@@ -365,6 +399,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
             text: beat.description.trim(),
             durationSec: beat.durationSec
           })),
+          targetSegmentIds,
           replaceSegmentId: replaceBeatId,
           providerId: provider.providerId,
           modelId: provider.modelId,
@@ -384,9 +419,20 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
               : `已提交 ${jobs.length} 段分镜视频生成`;
 
         applyProjectSession(refreshedSession, message);
+        setSelectedStoryBeatIdsForGeneration([]);
         return { ok: failedJobs.length === 0, message };
       } catch (error) {
         const message = getErrorMessage(error);
+        setStoryboardGenerationProgress((current) =>
+          current
+            ? {
+                ...current,
+                stage: "error",
+                message,
+                timestamp: new Date().toISOString()
+              }
+            : current
+        );
         setProjectMessage(message);
         return { ok: false, message };
       } finally {
@@ -400,8 +446,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       project,
       projectRuntime,
       saveEditorStateToProject,
-      selectedClipId,
-      storyBeats,
+    selectedClipId,
+    selectedStoryBeatIdsForGeneration,
+    storyBeats,
       timelineClips
     ]
   );
@@ -537,6 +584,14 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     },
     [markProjectDirty]
   );
+
+  const toggleStoryBeatGenerationSelection = useCallback((beatId: string) => {
+    setSelectedStoryBeatIdsForGeneration((current) =>
+      current.includes(beatId)
+        ? current.filter((selectedBeatId) => selectedBeatId !== beatId)
+        : [...current, beatId]
+    );
+  }, []);
 
   const moveStoryBeat = useCallback((beatId: string, targetBeatId: string) => {
     if (beatId === targetBeatId) {
@@ -736,12 +791,14 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       isProjectDirty,
       isProjectSaving,
       isAiGeneratingStoryboard,
+      storyboardGenerationProgress,
       projectMessage,
       assets,
       timelineClips,
       selectedAssetId,
       selectedClipId,
       storyBeats,
+      selectedStoryBeatIdsForGeneration,
       selectedAsset,
       selectedClip,
       activeTimelineAsset,
@@ -759,6 +816,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectAsset,
       selectClip,
       updateStoryBeat,
+      toggleStoryBeatGenerationSelection,
       moveStoryBeat,
       addAssetToTimeline,
       addSolidColorToTimeline,
@@ -783,6 +841,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       isProjectDirty,
       isProjectSaving,
       isAiGeneratingStoryboard,
+      storyboardGenerationProgress,
       moveClip,
       nudgePlayhead,
       openMediaPicker,
@@ -800,8 +859,10 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectedAssetId,
       selectedClip,
       selectedClipId,
+      selectedStoryBeatIdsForGeneration,
       setPlayhead,
       storyBeats,
+      toggleStoryBeatGenerationSelection,
       moveStoryBeat,
       splitClip,
       timelineFps,
@@ -1310,4 +1371,63 @@ function getErrorMessage(error: unknown): string {
   }
 
   return String(error);
+}
+
+function formatStoryboardProgressMessage(event: AiStoryboardProgressEvent): string {
+  const segment =
+    event.segmentIndex !== undefined && event.segmentCount !== undefined
+      ? `第 ${event.segmentIndex + 1}/${event.segmentCount} 段`
+      : "";
+  const progress =
+    event.progress !== undefined ? ` ${Math.round(event.progress * 100)}%` : "";
+  const prefix = segment ? `${segment}：` : "";
+
+  return `${prefix}${event.message}${progress}`;
+}
+
+function resolveStoryboardTargetSegmentIds({
+  project,
+  contentBeats,
+  assets,
+  selectedStoryBeatIdsForGeneration
+}: {
+  project: Project;
+  contentBeats: EditorStoryBeat[];
+  assets: EditorMediaAsset[];
+  selectedStoryBeatIdsForGeneration: string[];
+}): string[] {
+  const contentBeatIds = new Set(contentBeats.map((beat) => beat.id));
+  const selectedTargetIds = selectedStoryBeatIdsForGeneration.filter((beatId) =>
+    contentBeatIds.has(beatId)
+  );
+
+  if (selectedTargetIds.length > 0) {
+    return selectedTargetIds;
+  }
+
+  return contentBeats
+    .filter((beat) => !hasUsableStoryboardOutput(project, assets, beat.id))
+    .map((beat) => beat.id);
+}
+
+function hasUsableStoryboardOutput(
+  project: Project,
+  assets: EditorMediaAsset[],
+  beatId: string
+): boolean {
+  const segment = project.storyboardSegments.find(
+    (candidate) => candidate.id === beatId
+  );
+  if (!segment?.outputAssetId) {
+    return false;
+  }
+
+  const projectAsset = project.assets.find(
+    (asset) => asset.id === segment.outputAssetId
+  );
+  const editorAsset = assets.find((asset) => asset.id === segment.outputAssetId);
+
+  return Boolean(
+    projectAsset?.projectRelativePath || editorAsset?.projectRelativePath
+  );
 }

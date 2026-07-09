@@ -166,7 +166,11 @@ button {
 }
 
 .saved-state {
+  max-width: 420px;
+  overflow: hidden;
   color: #9ba4b0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .saved-state.is-dirty {
@@ -175,10 +179,7 @@ button {
 
 .saved-state.is-error {
   max-width: 360px;
-  overflow: hidden;
   color: #ffb6b6;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .topbar-actions {
@@ -810,7 +811,7 @@ button {
 
 .story-script-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -875,6 +876,7 @@ button {
 }
 
 .story-script-list {
+  grid-row: 3;
   display: grid;
   align-content: start;
   gap: 8px;
@@ -883,9 +885,73 @@ button {
   padding-right: 3px;
 }
 
+.story-progress-card {
+  grid-row: 2;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(139, 101, 255, 0.28);
+  border-radius: 7px;
+  background: rgba(118, 84, 237, 0.1);
+}
+
+.story-progress-title,
+.story-progress-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.story-progress-title {
+  gap: 7px;
+  color: #efeafe;
+  font-size: 12px;
+}
+
+.story-progress-title strong {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-progress-meta {
+  flex-wrap: wrap;
+  gap: 6px;
+  color: #aeb7c3;
+  font-size: 11px;
+}
+
+.story-progress-meta span {
+  max-width: 190px;
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-progress-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.story-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #8d6bff, #68d7ff);
+  transition: width 180ms ease;
+}
+
 .story-script-row {
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) 72px 32px;
+  grid-template-columns: 24px 26px minmax(0, 1fr) 72px 32px;
   gap: 8px;
   align-items: stretch;
   min-width: 0;
@@ -907,6 +973,33 @@ button {
 .story-script-row.is-blank {
   border-style: dashed;
   background: rgba(255, 255, 255, 0.016);
+}
+
+.story-script-row.is-generating {
+  border-color: rgba(139, 101, 255, 0.62);
+  background: rgba(118, 84, 237, 0.11);
+}
+
+.story-script-row.is-selected-for-generation {
+  border-color: rgba(104, 215, 255, 0.45);
+}
+
+.story-select-field {
+  display: grid;
+  width: 24px;
+  min-height: 58px;
+  place-items: center;
+}
+
+.story-select-field input {
+  width: 15px;
+  height: 15px;
+  accent-color: #7d56f2;
+  cursor: pointer;
+}
+
+.story-select-field input:disabled {
+  cursor: default;
 }
 
 .story-drag-handle {
@@ -953,6 +1046,20 @@ button {
   color: #eef3f8;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.story-description-field small {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  color: #bcaaff;
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .story-description-field textarea:focus,

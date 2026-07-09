@@ -124,11 +124,52 @@ export interface AiGenerateStoryboardRequest {
   projectRootPath: string;
   script: string;
   segments?: AiStoryboardSegmentInput[];
+  targetSegmentIds?: string[];
   replaceSegmentId?: string;
   providerId: string;
   modelId?: string;
   defaultDuration: number;
   aspectRatio: string;
+}
+
+export type AiStoryboardProgressStage =
+  | "workflow-start"
+  | "project-opened"
+  | "segments-planned"
+  | "segment-start"
+  | "boundary-resolving"
+  | "boundary-ready"
+  | "task-creating"
+  | "task-created"
+  | "waiting-output"
+  | "polling"
+  | "output-ready"
+  | "saving-output"
+  | "download-complete"
+  | "segment-complete"
+  | "project-saving"
+  | "project-saved"
+  | "workflow-complete"
+  | "error";
+
+export interface AiStoryboardProgressEvent {
+  runId: string;
+  projectRootPath: string;
+  stage: AiStoryboardProgressStage;
+  message: string;
+  segmentId?: string;
+  segmentIndex?: number;
+  segmentCount?: number;
+  providerId?: string;
+  modelId?: string;
+  jobId?: string;
+  providerJobId?: string;
+  status?: string;
+  outputUri?: string;
+  outputPath?: string;
+  progress?: number;
+  details?: Record<string, unknown>;
+  timestamp: string;
 }
 
 export interface AiStoryboardSegmentInput {

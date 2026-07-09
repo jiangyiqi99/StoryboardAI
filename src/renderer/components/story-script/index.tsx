@@ -7,7 +7,10 @@ export const StoryScriptPanel = () => {
     generateStoryboardVideos,
     isAiGeneratingStoryboard,
     moveStoryBeat,
+    selectedStoryBeatIdsForGeneration,
+    storyboardGenerationProgress,
     storyBeats,
+    toggleStoryBeatGenerationSelection,
     updateStoryBeat
   } = useEditor();
   const [draggedBeatId, setDraggedBeatId] = useState<string>();
@@ -15,6 +18,12 @@ export const StoryScriptPanel = () => {
   const hasStoryContent = storyBeats.some(
     (beat) => beat.description.trim().length > 0
   );
+  const selectedContentBeatCount = selectedStoryBeatIdsForGeneration.filter(
+    (beatId) =>
+      storyBeats.some(
+        (beat) => beat.id === beatId && beat.description.trim().length > 0
+      )
+  ).length;
 
   const handleDragStart = (
     event: DragEvent<HTMLElement>,
@@ -74,11 +83,17 @@ export const StoryScriptPanel = () => {
             onClick={() => {
               void generateStoryboardVideos();
             }}
-            title="按顺序生成所有分镜视频"
+            title="有勾选时生成选中分镜；没有勾选时只生成缺失分镜"
             type="button"
           >
             <Sparkles size={15} />
-            <span>{isAiGeneratingStoryboard ? "生成中" : "生成视频"}</span>
+            <span>
+              {isAiGeneratingStoryboard
+                ? "生成中"
+                : selectedContentBeatCount > 0
+                  ? `生成选中 ${selectedContentBeatCount}`
+                  : "生成缺失"}
+            </span>
           </button>
           <div className="story-script-total">
             <Clock3 size={15} />
@@ -87,12 +102,51 @@ export const StoryScriptPanel = () => {
         </div>
       </div>
 
+      {isAiGeneratingStoryboard && storyboardGenerationProgress ? (
+        <div className="story-progress-card">
+          <div className="story-progress-title">
+            <Sparkles size={14} />
+            <strong>{storyboardGenerationProgress.message}</strong>
+          </div>
+          <div className="story-progress-meta">
+            {storyboardGenerationProgress.segmentIndex !== undefined &&
+            storyboardGenerationProgress.segmentCount !== undefined ? (
+              <span>
+                片段 {storyboardGenerationProgress.segmentIndex + 1}/
+                {storyboardGenerationProgress.segmentCount}
+              </span>
+            ) : null}
+            {storyboardGenerationProgress.providerId ? (
+              <span>{storyboardGenerationProgress.providerId}</span>
+            ) : null}
+            {storyboardGenerationProgress.status ? (
+              <span>{storyboardGenerationProgress.status}</span>
+            ) : null}
+            {storyboardGenerationProgress.jobId ? (
+              <span title={storyboardGenerationProgress.jobId}>
+                {compactJobId(storyboardGenerationProgress.jobId)}
+              </span>
+            ) : null}
+          </div>
+          <div className="story-progress-track">
+            <span
+              style={{
+                width: `${resolveProgressPercent(storyboardGenerationProgress)}%`
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
+
       <div className="story-script-list">
         {storyBeats.map((beat, index) => {
           const isTrailingBlank =
             index === storyBeats.length - 1 && beat.description.trim().length === 0;
           const isDragging = draggedBeatId === beat.id;
           const isDropTarget = dropTargetId === beat.id;
+          const isGeneratingCurrent =
+            isAiGeneratingStoryboard &&
+            storyboardGenerationProgress?.segmentId === beat.id;
 
           return (
             <article
@@ -100,7 +154,11 @@ export const StoryScriptPanel = () => {
                 "story-script-row",
                 isTrailingBlank ? "is-blank" : "",
                 isDragging ? "is-dragging" : "",
-                isDropTarget ? "is-drop-target" : ""
+                isDropTarget ? "is-drop-target" : "",
+                selectedStoryBeatIdsForGeneration.includes(beat.id)
+                  ? "is-selected-for-generation"
+                  : "",
+                isGeneratingCurrent ? "is-generating" : ""
               ]
                 .filter(Boolean)
                 .join(" ")}
@@ -116,7 +174,17 @@ export const StoryScriptPanel = () => {
               }}
               onDragOver={(event) => handleDragOver(event, beat.id, isTrailingBlank)}
               onDrop={(event) => handleDrop(event, beat.id, isTrailingBlank)}
-            >
+              >
+              <label className="story-select-field" title="勾选后只生成这些分镜">
+                <input
+                  aria-label={`选择生成分镜 ${index + 1}`}
+                  checked={selectedStoryBeatIdsForGeneration.includes(beat.id)}
+                  disabled={isTrailingBlank || isAiGeneratingStoryboard}
+                  onChange={() => toggleStoryBeatGenerationSelection(beat.id)}
+                  type="checkbox"
+                />
+              </label>
+
               <button
                 aria-label={`拖动分镜 ${index + 1}`}
                 className="story-drag-handle"
@@ -142,6 +210,9 @@ export const StoryScriptPanel = () => {
                   rows={2}
                   value={beat.description}
                 />
+                {isGeneratingCurrent ? (
+                  <small>{storyboardGenerationProgress.message}</small>
+                ) : null}
               </div>
 
               <label className="story-duration-field">
@@ -179,6 +250,59 @@ export const StoryScriptPanel = () => {
     </section>
   );
 };
+
+function resolveProgressPercent(progress: NonNullable<ReturnType<typeof useEditor>["storyboardGenerationProgress"]>): number {
+  if (progress.progress !== undefined) {
+    return Math.max(4, Math.min(100, Math.round(progress.progress * 100)));
+  }
+
+  if (
+    progress.segmentIndex !== undefined &&
+    progress.segmentCount !== undefined &&
+    progress.segmentCount > 0
+  ) {
+    const segmentBase = progress.segmentIndex / progress.segmentCount;
+    const stageWeight = stageProgressWeight(progress.stage) / progress.segmentCount;
+    return Math.max(4, Math.min(98, Math.round((segmentBase + stageWeight) * 100)));
+  }
+
+  return stageProgressWeight(progress.stage) * 100;
+}
+
+function stageProgressWeight(stage: string): number {
+  switch (stage) {
+    case "workflow-start":
+    case "project-opened":
+    case "segments-planned":
+      return 0.08;
+    case "segment-start":
+    case "boundary-resolving":
+    case "boundary-ready":
+      return 0.16;
+    case "task-creating":
+      return 0.28;
+    case "task-created":
+    case "waiting-output":
+      return 0.4;
+    case "polling":
+      return 0.58;
+    case "output-ready":
+    case "saving-output":
+      return 0.78;
+    case "download-complete":
+    case "segment-complete":
+      return 0.92;
+    case "project-saved":
+    case "workflow-complete":
+      return 1;
+    default:
+      return 0.5;
+  }
+}
+
+function compactJobId(jobId: string): string {
+  return jobId.length > 22 ? `${jobId.slice(0, 10)}...${jobId.slice(-8)}` : jobId;
+}
 
 function formatDurationInput(durationSec: number): string {
   return Number.isInteger(durationSec) ? String(durationSec) : durationSec.toFixed(1);

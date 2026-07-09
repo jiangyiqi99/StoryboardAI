@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AssetMetadata } from "@shared/types/asset";
 import type {
@@ -95,12 +95,15 @@ export class FfmpegFrameEngine implements FrameEngine {
         request.absolutePath,
         "-frames:v",
         "1",
+        "-update",
+        "1",
         "-an",
         request.outputPath
       ]
     });
 
     ensureCommandSucceeded("ffmpeg frame extraction", result.exitCode, result.stderr);
+    await ensureOutputFileWritten("ffmpeg frame extraction", request.outputPath);
     return request.outputPath;
   }
 
@@ -143,6 +146,8 @@ export class FfmpegFrameEngine implements FrameEngine {
         request.absolutePath,
         "-frames:v",
         "1",
+        "-update",
+        "1",
         "-an",
         "-vf",
         `scale=min(${Math.max(1, Math.round(request.maxWidth))}\\,iw):-2`,
@@ -153,6 +158,7 @@ export class FfmpegFrameEngine implements FrameEngine {
     });
 
     ensureCommandSucceeded("ffmpeg thumbnail extraction", result.exitCode, result.stderr);
+    await ensureOutputFileWritten("ffmpeg thumbnail extraction", request.outputPath);
     return request.outputPath;
   }
 
@@ -234,4 +240,20 @@ function ensureCommandSucceeded(command: string, exitCode: number, stderr: strin
   }
 
   throw new Error(`${command} failed with exit code ${exitCode}: ${stderr.trim()}`);
+}
+
+async function ensureOutputFileWritten(
+  operation: string,
+  outputPath: string
+): Promise<void> {
+  try {
+    const stats = await stat(outputPath);
+    if (stats.size > 0) {
+      return;
+    }
+  } catch {
+    // Throw a consistent media-operation error below.
+  }
+
+  throw new Error(`${operation} did not write an output file: ${outputPath}`);
 }

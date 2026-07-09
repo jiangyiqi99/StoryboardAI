@@ -32,6 +32,9 @@ const createUnavailableDesktopApi = (): AivDesktopApi => {
     ai: {
       generateVideo: rejectDesktopUnavailable,
       generateStoryboard: rejectDesktopUnavailable,
+      onStoryboardProgress: () => {
+        return () => undefined;
+      },
       replaceRange: rejectDesktopUnavailable,
       getJobStatus: rejectDesktopUnavailable
     }

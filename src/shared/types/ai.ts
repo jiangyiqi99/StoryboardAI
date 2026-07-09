@@ -40,6 +40,10 @@ export interface ProviderJobRef {
 
 export interface AiGenerationJob {
   id: string;
+  storyboardRef?: string;
+  storyboardSegmentId?: string;
+  storyboardSegmentIndex?: number;
+  storyboardSegmentNumber?: number;
   workflow: AiWorkflowKind;
   mode: AiGenerationMode;
   status: AiGenerationStatus;

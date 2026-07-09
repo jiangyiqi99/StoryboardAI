@@ -40,6 +40,19 @@ export const desktopApi: AivDesktopApi = {
     generateVideo: (request) => invoke(IPC_CHANNELS.AI_GENERATE_VIDEO, request),
     generateStoryboard: (request) =>
       invoke(IPC_CHANNELS.AI_GENERATE_STORYBOARD, request),
+    onStoryboardProgress: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        progressEvent: Parameters<typeof listener>[0]
+      ) => {
+        listener(progressEvent);
+      };
+
+      ipcRenderer.on(IPC_CHANNELS.AI_STORYBOARD_PROGRESS, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.AI_STORYBOARD_PROGRESS, handler);
+      };
+    },
     replaceRange: (request) => invoke(IPC_CHANNELS.AI_REPLACE_RANGE, request),
     getJobStatus: (request) => invoke(IPC_CHANNELS.AI_GET_JOB_STATUS, request)
   }

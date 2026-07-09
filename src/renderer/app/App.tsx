@@ -62,6 +62,7 @@ const EditorWorkspace = () => {
     useState<ExportSettings>(defaultExportSettings);
   const {
     createProject,
+    isAiGeneratingStoryboard,
     isProjectDirty,
     isProjectOpen,
     isProjectSaving,
@@ -69,14 +70,17 @@ const EditorWorkspace = () => {
     project,
     projectMessage,
     projectRuntime,
-    saveProject
+    saveProject,
+    storyboardGenerationProgress
   } = useEditor();
 
   const projectStatus = resolveProjectStatus({
+    isAiGeneratingStoryboard,
     isProjectDirty,
     isProjectOpen,
     isProjectSaving,
-    projectMessage
+    projectMessage,
+    storyboardGenerationProgressStage: storyboardGenerationProgress?.stage
   });
 
   const openProject = async () => {
@@ -237,18 +241,30 @@ const EditorWorkspace = () => {
 };
 
 interface ProjectStatusInput {
+  isAiGeneratingStoryboard: boolean;
   isProjectDirty: boolean;
   isProjectOpen: boolean;
   isProjectSaving: boolean;
   projectMessage?: string;
+  storyboardGenerationProgressStage?: string;
 }
 
 const resolveProjectStatus = ({
+  isAiGeneratingStoryboard,
   isProjectDirty,
   isProjectOpen,
   isProjectSaving,
-  projectMessage
+  projectMessage,
+  storyboardGenerationProgressStage
 }: ProjectStatusInput): { label: string; className: string } => {
+  if (storyboardGenerationProgressStage === "error" && projectMessage) {
+    return { label: projectMessage, className: "saved-state is-error" };
+  }
+
+  if (isAiGeneratingStoryboard && projectMessage) {
+    return { label: projectMessage, className: "saved-state" };
+  }
+
   if (projectMessage && !["已保存", "已打开项目", "已创建项目"].includes(projectMessage)) {
     return { label: projectMessage, className: "saved-state is-error" };
   }

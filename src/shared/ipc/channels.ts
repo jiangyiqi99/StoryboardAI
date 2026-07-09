@@ -14,6 +14,7 @@ export const IPC_CHANNELS = {
   APP_CONFIG_SAVE: "appConfig:save",
   AI_GENERATE_VIDEO: "ai:generateVideo",
   AI_GENERATE_STORYBOARD: "ai:generateStoryboard",
+  AI_STORYBOARD_PROGRESS: "ai:storyboardProgress",
   AI_REPLACE_RANGE: "ai:replaceRange",
   AI_GET_JOB_STATUS: "ai:getJobStatus"
 } as const;

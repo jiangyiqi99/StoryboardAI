@@ -1,5 +1,12 @@
 import type { ProjectSession } from "@shared/ipc/contracts";
+import {
+  createStoryboardAssociation,
+  createStoryboardAssociationMetadata,
+  createStoryboardAssociationTags,
+  type StoryboardAssociation
+} from "@shared/storyboardAssociation";
 import type { Asset, AssetKind, AssetMetadata } from "@shared/types/asset";
+import type { AiGenerationJob } from "@shared/types/ai";
 import type { Project } from "@shared/types/project";
 import type { StoryboardSegment } from "@shared/types/storyboard";
 import type { Clip, Timeline, Track, TrackKind } from "@shared/types/timeline";
@@ -12,7 +19,13 @@ import type {
 } from "./editorTypes";
 
 const EDITOR_METADATA_KEY = "storyboardAiEditor";
+const STORYBOARD_METADATA_KEY = "storyboardAi";
 const DEFAULT_STORY_BEAT_DURATION_SEC = 5;
+
+interface StoryboardAssociationBinding {
+  association: StoryboardAssociation;
+  segment: StoryboardSegment;
+}
 
 export interface EditorProjectState {
   assets: EditorMediaAsset[];
@@ -48,13 +61,42 @@ export const editorStateToProject = (
   baseProject: Project,
   state: ProjectSaveState
 ): Project => {
+  const storyboardSegments = editorStoryBeatsToProjectSegments(
+    state.storyBeats,
+    baseProject.storyboardSegments
+  );
+  const storyboardBindings = createStoryboardAssociationBindings(storyboardSegments);
+  const storyboardBindingByAssetId = new Map(
+    storyboardBindings
+      .filter((binding) => Boolean(binding.segment.outputAssetId))
+      .map((binding) => [binding.segment.outputAssetId!, binding])
+  );
+  const storyboardBindingByJobId = new Map(
+    storyboardBindings
+      .filter((binding) => Boolean(binding.segment.aiJobId))
+      .map((binding) => [binding.segment.aiJobId!, binding])
+  );
+  const existingAssetById = new Map(
+    baseProject.assets.map((asset) => [asset.id, asset])
+  );
+
   return {
     ...baseProject,
-    assets: state.assets.map(editorAssetToProjectAsset),
-    timeline: editorClipsToProjectTimeline(baseProject, state),
-    storyboardSegments: editorStoryBeatsToProjectSegments(
-      state.storyBeats,
-      baseProject.storyboardSegments
+    assets: state.assets.map((asset) =>
+      editorAssetToProjectAsset(
+        asset,
+        existingAssetById.get(asset.id),
+        storyboardBindingByAssetId.get(asset.id)
+      )
+    ),
+    timeline: editorClipsToProjectTimeline(
+      baseProject,
+      state,
+      storyboardBindingByAssetId
+    ),
+    storyboardSegments,
+    aiGenerationJobs: baseProject.aiGenerationJobs.map((job) =>
+      applyStoryboardJobAssociation(job, storyboardBindingByJobId.get(job.id))
     )
   };
 };
@@ -131,17 +173,35 @@ const projectAssetToEditorAsset = (
   };
 };
 
-const editorAssetToProjectAsset = (asset: EditorMediaAsset): Asset => {
-  const metadata = withEditorAssetMetadata(asset);
+const editorAssetToProjectAsset = (
+  asset: EditorMediaAsset,
+  existingAsset: Asset | undefined,
+  storyboardBinding: StoryboardAssociationBinding | undefined
+): Asset => {
+  const metadata = storyboardBinding
+    ? applyStoryboardAssetMetadata(
+        withEditorAssetMetadata(asset),
+        storyboardBinding
+      )
+    : withEditorAssetMetadata(asset);
+  const association = storyboardBinding?.association;
 
   return {
+    ...existingAsset,
     id: asset.id,
+    storyboardRef: association?.storyboardRef ?? existingAsset?.storyboardRef,
+    storyboardSegmentId: association?.segmentId ?? existingAsset?.storyboardSegmentId,
+    storyboardSegmentIndex:
+      association?.segmentIndex ?? existingAsset?.storyboardSegmentIndex,
+    storyboardSegmentNumber:
+      association?.segmentNumber ?? existingAsset?.storyboardSegmentNumber,
     kind: editorAssetKindToProjectKind(asset),
     origin: asset.imported ? "imported" : "generated",
     name: asset.name,
     projectRelativePath: asset.projectRelativePath,
     metadata,
     thumbnailPath: asset.thumbnailProjectRelativePath,
+    tags: mergeStoryboardAssociationTags(existingAsset?.tags, association),
     importedAt: asset.importedAt ?? new Date().toISOString()
   };
 };
@@ -173,7 +233,9 @@ const projectTimelineToEditorClips = (
 
 const editorClipsToProjectTimeline = (
   baseProject: Project,
-  state: ProjectSaveState
+  state: ProjectSaveState,
+  storyboardBindingByAssetId: Map<string, StoryboardAssociationBinding> =
+    new Map()
 ): Timeline => {
   const duration = state.timelineClips.reduce(
     (maxEnd, clip) => Math.max(maxEnd, clip.timelineStart + clip.durationSec),
@@ -189,7 +251,12 @@ const editorClipsToProjectTimeline = (
       ...track,
       clips: state.timelineClips
         .filter((clip) => clip.trackId === track.id)
-        .map(editorClipToProjectClip)
+        .map((clip) =>
+          editorClipToProjectClip(
+            clip,
+            storyboardBindingByAssetId.get(clip.assetId)
+          )
+        )
     })),
     selection: state.selectedClipId
       ? {
@@ -199,15 +266,25 @@ const editorClipsToProjectTimeline = (
   };
 };
 
-const editorClipToProjectClip = (clip: EditorTimelineClip): Clip => {
+const editorClipToProjectClip = (
+  clip: EditorTimelineClip,
+  storyboardBinding?: StoryboardAssociationBinding
+): Clip => {
   const timelineStart = roundTimelineTime(clip.timelineStart);
   const timelineEnd = roundTimelineTime(clip.timelineStart + clip.durationSec);
-  const metadata = clip.linkedClipId
+  const baseMetadata = clip.linkedClipId
     ? {
         ...(clip.metadata ?? {}),
         linkedClipId: clip.linkedClipId
       }
     : clip.metadata;
+  const metadata = storyboardBinding
+    ? {
+        ...(baseMetadata ?? {}),
+        ...createStoryboardAssociationMetadata(storyboardBinding.association),
+        storyText: storyboardBinding.segment.text
+      }
+    : baseMetadata;
 
   return {
     id: clip.id,
@@ -251,10 +328,13 @@ const editorStoryBeatsToProjectSegments = (
     .filter((beat) => !isBlankStoryBeat(beat))
     .map((beat, index) => {
       const existingSegment = existingById.get(beat.id);
+      const association = createStoryboardAssociation(beat.id, index);
       return {
         ...existingSegment,
         id: beat.id,
         index,
+        storyboardRef: association.storyboardRef,
+        storyboardNumber: association.segmentNumber,
         text: beat.description.trim(),
         targetDuration: normalizePositiveNumber(
           beat.durationSec,
@@ -263,6 +343,94 @@ const editorStoryBeatsToProjectSegments = (
         status: existingSegment?.status ?? "draft"
       };
     });
+};
+
+const createStoryboardAssociationBindings = (
+  segments: StoryboardSegment[]
+): StoryboardAssociationBinding[] =>
+  segments.map((segment) => ({
+    association: createStoryboardAssociation(segment.id, segment.index),
+    segment
+  }));
+
+const applyStoryboardAssetMetadata = (
+  metadata: AssetMetadata,
+  binding: StoryboardAssociationBinding
+): AssetMetadata => {
+  const existingStoryboardMetadata = metadata.probe?.[STORYBOARD_METADATA_KEY];
+  const existingRecord = isRecord(existingStoryboardMetadata)
+    ? existingStoryboardMetadata
+    : {};
+  const associationMetadata = createStoryboardAssociationMetadata(
+    binding.association
+  );
+
+  return {
+    ...metadata,
+    probe: {
+      ...(metadata.probe ?? {}),
+      [STORYBOARD_METADATA_KEY]: {
+        ...existingRecord,
+        ...associationMetadata,
+        segmentId: binding.segment.id,
+        segmentIndex: binding.segment.index,
+        segmentNumber: binding.association.segmentNumber,
+        text: binding.segment.text,
+        jobId: binding.segment.aiJobId,
+        outputAssetId: binding.segment.outputAssetId
+      }
+    }
+  };
+};
+
+const applyStoryboardJobAssociation = (
+  job: AiGenerationJob,
+  binding: StoryboardAssociationBinding | undefined
+): AiGenerationJob => {
+  if (!binding) {
+    return job;
+  }
+
+  const associationMetadata = createStoryboardAssociationMetadata(
+    binding.association
+  );
+
+  return {
+    ...job,
+    storyboardRef: binding.association.storyboardRef,
+    storyboardSegmentId: binding.association.segmentId,
+    storyboardSegmentIndex: binding.association.segmentIndex,
+    storyboardSegmentNumber: binding.association.segmentNumber,
+    outputAssetId: binding.segment.outputAssetId ?? job.outputAssetId,
+    metadata: {
+      ...(job.metadata ?? {}),
+      ...associationMetadata,
+      storyText: binding.segment.text,
+      outputAssetId: binding.segment.outputAssetId ?? job.outputAssetId
+    }
+  };
+};
+
+const mergeStoryboardAssociationTags = (
+  tags: string[] | undefined,
+  association: StoryboardAssociation | undefined
+): string[] | undefined => {
+  if (!association) {
+    return tags;
+  }
+
+  const retainedTags = (tags ?? []).filter((tag) => !isStoryboardAssociationTag(tag));
+  const nextTags = [...retainedTags, ...createStoryboardAssociationTags(association)];
+  return Array.from(new Set(nextTags));
+};
+
+const isStoryboardAssociationTag = (tag: string): boolean => {
+  return (
+    tag.startsWith("storyboard-ref:") ||
+    tag.startsWith("story-segment:") ||
+    tag.startsWith("story-index:") ||
+    tag.startsWith("story-number:")
+  );
 };
 
 const withEditorAssetMetadata = (asset: EditorMediaAsset): AssetMetadata => {

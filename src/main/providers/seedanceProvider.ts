@@ -127,6 +127,12 @@ export class SeedanceProviderAdapter extends BaseCloudProviderAdapter {
   async submitGeneration(input: ProviderAdapterInput): Promise<ProviderAdapterJob> {
     const config = await this.getConfig();
     const client = new SeedanceRestClient(config);
+    logSeedance("submitGeneration:start", {
+      modelId: input.modelId,
+      mode: input.mode,
+      bodyKeys: Object.keys(input.body),
+      fileCount: input.files.length
+    });
     const result = await client.createTask(input.body);
     const taskId = firstStringByKeys(result, ["id", "task_id", "taskId"]);
     if (!taskId) {
@@ -140,6 +146,11 @@ export class SeedanceProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     const modelId = stringValue(input.body.model) ?? config.reqKey ?? DEFAULT_REQ_KEY;
+    logSeedance("submitGeneration:taskCreated", {
+      modelId,
+      taskId,
+      rawResponsePreview: compactLogValue(result)
+    });
     return {
       providerId: this.providerId,
       providerJobId: encodeProviderJobId(modelId, taskId),
@@ -162,6 +173,10 @@ export class SeedanceProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     const client = new SeedanceRestClient(config);
+    logSeedance("getJobStatus:start", {
+      providerJobId,
+      taskId
+    });
     const result = await client.getTask(taskId);
     const outputs = await extractVideoOutputs(result, this.providerId);
     const status = parseSeedanceStatus(result, outputs);
@@ -169,6 +184,16 @@ export class SeedanceProviderAdapter extends BaseCloudProviderAdapter {
       status === "failed"
         ? firstStringByKeys(result, ["message", "error", "error_message", "code"])
         : undefined;
+    logSeedance("getJobStatus:parsed", {
+      providerJobId,
+      taskId,
+      status,
+      outputCount: outputs.length,
+      outputUri: outputs[0],
+      progress: firstNumberByKeys(result, ["progress", "percent"]),
+      errorMessage,
+      rawResponsePreview: compactLogValue(result)
+    });
 
     return {
       providerId: this.providerId,
@@ -289,7 +314,13 @@ class SeedanceRestClient {
     body?: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const bodyText = body ? JSON.stringify(body) : undefined;
-    const response = await fetch(this.url(path), {
+    const url = this.url(path);
+    logSeedance("http:start", {
+      method,
+      url,
+      bodyBytes: bodyText ? Buffer.byteLength(bodyText, "utf8") : 0
+    });
+    const response = await fetch(url, {
       method,
       body: bodyText ? Buffer.from(bodyText, "utf8") : undefined,
       headers: {
@@ -299,6 +330,13 @@ class SeedanceRestClient {
       signal: AbortSignal.timeout(this.config.timeoutMs)
     });
     const responseText = await response.text();
+    logSeedance("http:response", {
+      method,
+      url,
+      httpStatus: response.status,
+      ok: response.ok,
+      responseBytes: Buffer.byteLength(responseText, "utf8")
+    });
     const payload = parseJsonResponse(responseText, response.status);
 
     if (response.status >= 400) {
@@ -360,6 +398,30 @@ const arkErrorMessage = (
   }
 
   return firstStringByKeys(payload, ["message", "error_message"]) ?? fallback;
+};
+
+const logSeedance = (stage: string, details: Record<string, unknown>): void => {
+  console.log(`[StoryboardAI][provider:seedance] ${stage}`, details);
+};
+
+const compactLogValue = (value: unknown): unknown => {
+  if (typeof value === "string") {
+    return value.length > 500 ? `${value.slice(0, 500)}...` : value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 8).map((item) => compactLogValue(item));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .slice(0, 30)
+      .map(([key, item]) => [key, compactLogValue(item)])
+  );
 };
 
 const mapSeedanceImageReference = async (

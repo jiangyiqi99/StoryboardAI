@@ -1,6 +1,7 @@
 import type {
   AiGenerateStoryboardRequest,
   AiGetJobStatusRequest,
+  AiStoryboardProgressEvent,
   AiReplaceRangeRequest
 } from "@shared/ipc/contracts";
 import type {
@@ -17,6 +18,10 @@ export interface AiOrchestratorServices {
   projectFiles: LocalProjectFileService;
   mediaEngine: MediaEngineFacade;
   apiRouter: AiApiRouter;
+}
+
+export interface AiOrchestratorRunOptions {
+  onStoryboardProgress?(event: AiStoryboardProgressEvent): void;
 }
 
 export class AiOrchestrator {
@@ -39,9 +44,12 @@ export class AiOrchestrator {
   }
 
   generateStoryboard(
-    request: AiGenerateStoryboardRequest
+    request: AiGenerateStoryboardRequest,
+    options: AiOrchestratorRunOptions = {}
   ): Promise<AiGenerationJob[]> {
-    return this.storyboardWorkflow.run(request);
+    return this.storyboardWorkflow.run(request, {
+      onProgress: options.onStoryboardProgress
+    });
   }
 
   replaceRange(request: AiReplaceRangeRequest): Promise<AiGenerationJob> {

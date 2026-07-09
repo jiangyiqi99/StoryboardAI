@@ -111,10 +111,21 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
     const config = await this.getConfig();
     const client = new GoogleVeoRestClient(config);
     const modelId = input.modelId ?? config.textImageModel;
+    logGoogleVeo("submitGeneration:start", {
+      modelId,
+      mode: input.mode,
+      bodyKeys: Object.keys(input.body),
+      fileCount: input.files.length
+    });
     const result = await client.post(modelId, "predictLongRunning", input.body);
     const operationName = stringValue(result.name);
 
     if (operationName) {
+      logGoogleVeo("submitGeneration:operationCreated", {
+        modelId,
+        operationName,
+        rawResponsePreview: compactLogValue(result)
+      });
       return {
         providerId: this.providerId,
         providerJobId: encodeProviderJobId(modelId, operationName),
@@ -124,6 +135,12 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     const outputs = await extractGoogleVeoByteOutputs(result);
+    logGoogleVeo("submitGeneration:directOutput", {
+      modelId,
+      outputCount: outputs.length,
+      outputUri: outputs[0],
+      rawResponsePreview: compactLogValue(result)
+    });
     return {
       providerId: this.providerId,
       providerJobId: encodeProviderJobId(modelId, `direct-${randomUUID()}`),
@@ -148,11 +165,21 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     const client = new GoogleVeoRestClient(config);
+    logGoogleVeo("getJobStatus:start", {
+      providerJobId,
+      modelId,
+      operationName
+    });
     const result = await client.post(modelId, "fetchPredictOperation", {
       operationName
     });
 
     if (!result.done) {
+      logGoogleVeo("getJobStatus:running", {
+        providerJobId,
+        operationName,
+        rawResponsePreview: compactLogValue(result)
+      });
       return {
         providerId: this.providerId,
         providerJobId,
@@ -162,6 +189,12 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     if (result.error) {
+      logGoogleVeo("getJobStatus:failed", {
+        providerJobId,
+        operationName,
+        error: result.error,
+        rawResponsePreview: compactLogValue(result)
+      });
       return {
         providerId: this.providerId,
         providerJobId,
@@ -177,6 +210,13 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
     }
 
     const outputs = await extractGoogleVeoByteOutputs(result);
+    logGoogleVeo("getJobStatus:succeeded", {
+      providerJobId,
+      operationName,
+      outputCount: outputs.length,
+      outputUri: outputs[0],
+      rawResponsePreview: compactLogValue(result)
+    });
     return {
       providerId: this.providerId,
       providerJobId,
@@ -285,6 +325,11 @@ class GoogleVeoRestClient {
   ): Promise<Record<string, unknown>> {
     const url = new URL(`${this.baseUrl()}/${this.modelPath(modelId)}:${method}`);
     url.searchParams.set("key", this.config.apiKey);
+    logGoogleVeo("http:start", {
+      method: "POST",
+      url: redactGoogleApiKey(url),
+      bodyBytes: Buffer.byteLength(JSON.stringify(body), "utf8")
+    });
 
     const response = await fetch(url, {
       method: "POST",
@@ -295,6 +340,13 @@ class GoogleVeoRestClient {
       signal: AbortSignal.timeout(this.config.timeoutMs)
     });
     const responseText = await response.text();
+    logGoogleVeo("http:response", {
+      method: "POST",
+      url: redactGoogleApiKey(url),
+      httpStatus: response.status,
+      ok: response.ok,
+      responseBytes: Buffer.byteLength(responseText, "utf8")
+    });
     let payload: Record<string, unknown>;
 
     try {
@@ -415,6 +467,39 @@ const numberMetadata = (
 
 const stringValue = (value: unknown): string | undefined => {
   return typeof value === "string" ? value : undefined;
+};
+
+const logGoogleVeo = (stage: string, details: Record<string, unknown>): void => {
+  console.log(`[StoryboardAI][provider:google-veo] ${stage}`, details);
+};
+
+const redactGoogleApiKey = (url: URL): string => {
+  const redacted = new URL(url.toString());
+  if (redacted.searchParams.has("key")) {
+    redacted.searchParams.set("key", "[redacted]");
+  }
+
+  return redacted.toString();
+};
+
+const compactLogValue = (value: unknown): unknown => {
+  if (typeof value === "string") {
+    return value.length > 500 ? `${value.slice(0, 500)}...` : value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 8).map((item) => compactLogValue(item));
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .slice(0, 30)
+      .map(([key, item]) => [key, compactLogValue(item)])
+  );
 };
 
 const stringifyProviderError = (error: unknown): string => {

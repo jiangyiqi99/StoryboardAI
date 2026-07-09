@@ -28,6 +28,10 @@ export interface AssetMetadata {
 
 export interface Asset {
   id: AssetId;
+  storyboardRef?: string;
+  storyboardSegmentId?: string;
+  storyboardSegmentIndex?: number;
+  storyboardSegmentNumber?: number;
   kind: AssetKind;
   origin: AssetOrigin;
   name: string;
