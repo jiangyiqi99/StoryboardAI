@@ -370,6 +370,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
             project,
             contentBeats,
             assets,
+            timelineClips,
             selectedStoryBeatIdsForGeneration
           });
       if (targetSegmentIds.length === 0) {
@@ -377,6 +378,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         setProjectMessage(message);
         return { ok: true, message };
       }
+      const selectedContentBeatIds = selectedStoryBeatIdsForGeneration.filter(
+        (beatId) => contentBeats.some((beat) => beat.id === beatId)
+      );
 
       try {
         setIsAiGeneratingStoryboard(true);
@@ -403,6 +407,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
           })),
           targetSegmentIds,
           replaceSegmentId: replaceBeatId,
+          replaceExistingTargetClips:
+            Boolean(replaceBeatId) || selectedContentBeatIds.length > 0,
           providerId: provider.providerId,
           modelId: provider.modelId,
           defaultDuration: DEFAULT_STORY_BEAT_DURATION_SEC,
@@ -1827,11 +1833,13 @@ function resolveStoryboardTargetSegmentIds({
   project,
   contentBeats,
   assets,
+  timelineClips,
   selectedStoryBeatIdsForGeneration
 }: {
   project: Project;
   contentBeats: EditorStoryBeat[];
   assets: EditorMediaAsset[];
+  timelineClips: EditorTimelineClip[];
   selectedStoryBeatIdsForGeneration: string[];
 }): string[] {
   const contentBeatIds = new Set(contentBeats.map((beat) => beat.id));
@@ -1844,28 +1852,51 @@ function resolveStoryboardTargetSegmentIds({
   }
 
   return contentBeats
-    .filter((beat) => !hasUsableStoryboardOutput(project, assets, beat.id))
+    .filter(
+      (beat) => !hasUsableStoryboardOutput(project, assets, timelineClips, beat.id)
+    )
     .map((beat) => beat.id);
 }
 
 function hasUsableStoryboardOutput(
   project: Project,
   assets: EditorMediaAsset[],
+  timelineClips: EditorTimelineClip[],
   beatId: string
 ): boolean {
   const segment = project.storyboardSegments.find(
     (candidate) => candidate.id === beatId
   );
-  if (!segment?.outputAssetId) {
-    return false;
+  if (
+    segment?.outputAssetId &&
+    hasUsableStoryboardAsset(project, assets, segment.outputAssetId)
+  ) {
+    return true;
   }
 
-  const projectAsset = project.assets.find(
-    (asset) => asset.id === segment.outputAssetId
+  return timelineClips.some(
+    (clip) =>
+      clip.trackId === "video-1" &&
+      getClipStorySegmentId(clip) === beatId &&
+      hasUsableStoryboardAsset(project, assets, clip.assetId)
   );
-  const editorAsset = assets.find((asset) => asset.id === segment.outputAssetId);
+}
+
+function hasUsableStoryboardAsset(
+  project: Project,
+  assets: EditorMediaAsset[],
+  assetId: string
+): boolean {
+  const projectAsset = project.assets.find(
+    (asset) => asset.id === assetId
+  );
+  const editorAsset = assets.find((asset) => asset.id === assetId);
 
   return Boolean(
-    projectAsset?.projectRelativePath || editorAsset?.projectRelativePath
+    projectAsset?.projectRelativePath ||
+      editorAsset?.projectRelativePath ||
+      editorAsset?.absolutePath ||
+      editorAsset?.objectUrl ||
+      editorAsset?.variant === "solid-color"
   );
 }

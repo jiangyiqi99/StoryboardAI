@@ -125,6 +125,9 @@ export class StoryboardToTimelineWorkflow {
       const now = new Date().toISOString();
       const jobs: AiGenerationJob[] = [];
       let stoppedOnFailure = false;
+      const shouldReplaceExistingTargetClips = Boolean(
+        request.replaceSegmentId || request.replaceExistingTargetClips
+      );
       const nextProject: Project = {
         ...project,
         storyboardSegments: mergeStoryboardSegments(
@@ -132,7 +135,12 @@ export class StoryboardToTimelineWorkflow {
           plannedSegments,
           targetSegmentIds
         ),
-        timeline: removeGeneratedStoryboardClips(project.timeline, targetSegmentIds),
+        timeline: removeGeneratedStoryboardClips(
+          project.timeline,
+          project.assets,
+          targetSegmentIds,
+          shouldReplaceExistingTargetClips
+        ),
         updatedAt: now
       };
 
@@ -1179,21 +1187,55 @@ function updateSegmentAfterFailedGeneration(
 
 function removeGeneratedStoryboardClips(
   timeline: Timeline,
-  targetSegmentIds: Set<string>
+  assets: Asset[],
+  targetSegmentIds: Set<string>,
+  removeAllTargetClips = false
 ): Timeline {
+  const assetById = new Map(assets.map((asset) => [asset.id, asset]));
+
   return {
     ...timeline,
     tracks: ensureVideoTrack(timeline.tracks).map((track) => ({
       ...track,
       clips: track.clips.filter((clip) => {
         const storySegmentId = clip.metadata?.storySegmentId;
-        return !(
-          typeof storySegmentId === "string" &&
-          targetSegmentIds.has(storySegmentId)
+        const asset = assetById.get(clip.assetId);
+        return !isTargetedGeneratedStoryboardClip(
+          clip,
+          asset,
+          storySegmentId,
+          targetSegmentIds,
+          removeAllTargetClips
         );
       })
     }))
   };
+}
+
+function isTargetedGeneratedStoryboardClip(
+  clip: Clip,
+  asset: Asset | undefined,
+  storySegmentId: unknown,
+  targetSegmentIds: Set<string>,
+  removeAllTargetClips: boolean
+): boolean {
+  if (
+    typeof storySegmentId !== "string" ||
+    !targetSegmentIds.has(storySegmentId)
+  ) {
+    return false;
+  }
+
+  if (removeAllTargetClips) {
+    return true;
+  }
+
+  return (
+    clip.metadata?.source === "storyboard-to-video" ||
+    Boolean(asset?.generatedByJobId) ||
+    asset?.kind === "generated-video" ||
+    asset?.tags?.includes("ai-generated") === true
+  );
 }
 
 function insertGeneratedClip(timeline: Timeline, clip: Clip): Timeline {

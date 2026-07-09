@@ -126,6 +126,7 @@ export interface AiGenerateStoryboardRequest {
   segments?: AiStoryboardSegmentInput[];
   targetSegmentIds?: string[];
   replaceSegmentId?: string;
+  replaceExistingTargetClips?: boolean;
   providerId: string;
   modelId?: string;
   defaultDuration: number;
