@@ -1,9 +1,11 @@
 node_modules/
 dist/
+release/
 out/
 .vite/
 *.log
 .DS_Store
+.github/
 
 # Local project runtime outputs can be large and are regenerated.
 *.aivproj/cache/**

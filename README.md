@@ -13,6 +13,20 @@ AI-native 本地非线性视频剪辑软件架构骨架。当前阶段只搭建 
 
 OpenCut 只作为公开设计参考：当前 OpenCut 主仓库描述其目标为 web/desktop/mobile 视频编辑器，classic 仓库保留了 timeline、media、preview、project、rendering 等模块边界。本项目不会 fork 或照搬 OpenCut，而是围绕本地 `.aivproj` 和 AI 生成工作流重新组织。参考记录见 [references/opencut-notes.md](references/opencut-notes.md)。
 
+## 开发与打包
+
+```bash
+npm run dev
+npm run build
+npm run dist:mac
+npm run dist:win
+npm run dist:linux
+```
+
+`npm run build` 只生成 Electron/Vite 运行产物到 `out/`。`dist:*` 命令会先构建，再通过 electron-builder 生成安装包，输出到 `release/`。
+
+跨平台发布建议在对应系统或 CI runner 上分别打包：macOS 用 macOS runner，Windows 用 Windows runner，Linux 用 Linux runner。macOS 公证和 Windows 代码签名需要额外配置证书；未配置时只能生成开发/本地测试用安装包。应用图标可后续补充到 electron-builder 支持的 `build/icon.icns`、`build/icon.ico`、`build/icon.png`。
+
 ## 目录结构
 
 ```text
