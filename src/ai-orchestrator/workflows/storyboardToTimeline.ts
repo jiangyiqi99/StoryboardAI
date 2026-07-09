@@ -982,7 +982,7 @@ function createGenerationJob(
       request.firstFramePath,
       request.lastFramePath
     ].filter((path): path is string => Boolean(path)),
-    outputAssetId: association.assetId,
+    outputAssetId: `asset-${association.storyboardRef}-${randomUUID()}`,
     providerJobId: response.providerJobId,
     createdAt: now,
     updatedAt: now,
@@ -1105,7 +1105,7 @@ function createGeneratedClip(asset: Asset, plannedSegment: PlannedSegment): Clip
   );
 
   return {
-    id: association.clipId,
+    id: `clip-${association.storyboardRef}-${randomUUID()}`,
     assetId: asset.id,
     trackId: "video-1",
     name: asset.name,

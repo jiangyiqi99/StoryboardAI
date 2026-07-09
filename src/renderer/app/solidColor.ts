@@ -37,6 +37,13 @@ export function rgbColorToLabel(color: EditorRgbColor): string {
   return `RGB(${normalizedColor.r}, ${normalizedColor.g}, ${normalizedColor.b})`;
 }
 
+export function rgbColorToHex(color: EditorRgbColor): string {
+  const normalizedColor = normalizeRgbColor(color);
+  const toHex = (value: number) => value.toString(16).padStart(2, "0").toUpperCase();
+
+  return `#${toHex(normalizedColor.r)}${toHex(normalizedColor.g)}${toHex(normalizedColor.b)}`;
+}
+
 function normalizeRgbChannel(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;

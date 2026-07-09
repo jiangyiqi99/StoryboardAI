@@ -31,6 +31,11 @@ export interface EditorMediaAsset {
   metadata?: AssetMetadata;
   imported: boolean;
   importedAt?: string;
+  generatedByJobId?: string;
+  storyboardRef?: string;
+  storyboardSegmentId?: string;
+  storyboardSegmentIndex?: number;
+  storyboardSegmentNumber?: number;
   variant?: string;
   solidColor?: EditorRgbColor;
 }

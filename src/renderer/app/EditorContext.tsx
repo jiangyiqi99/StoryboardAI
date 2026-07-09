@@ -31,6 +31,7 @@ import { desktopApi } from "../ipc/api";
 import {
   normalizeRgbColor,
   normalizeSolidDuration,
+  rgbColorToHex,
   rgbColorToLabel
 } from "./solidColor";
 import {
@@ -100,6 +101,7 @@ interface EditorContextValue {
     timelineStart?: number
   ): void;
   moveClip(clipId: string, timelineStart: number): void;
+  replaceClipAsset(clipId: string, assetId: string): void;
   deleteClip(clipId?: string): void;
   splitClip(clipId: string | undefined, splitTime: number): void;
   setPlayhead(time: number): void;
@@ -610,6 +612,12 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       const nextBeats = [...contentBeats];
       const [movedBeat] = nextBeats.splice(sourceIndex, 1);
       nextBeats.splice(targetIndex, 0, movedBeat);
+      setTimelineClips((currentClips) =>
+        reorderTimelineClipsByStoryBeatOrder(
+          currentClips,
+          nextBeats.map((beat) => beat.id)
+        )
+      );
 
       return ensureTrailingBlankStoryBeat(nextBeats);
     });
@@ -624,6 +632,10 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const durationSec = Math.max(asset.durationSec || (asset.kind === "image" ? 5 : 8), 0.2);
+      const storyBeat =
+        asset.kind === "audio"
+          ? undefined
+          : createStoryBeatForTimelineAsset(asset, durationSec);
       const nextClipId = `clip-${crypto.randomUUID()}`;
       const nextClip: EditorTimelineClip = {
         id: nextClipId,
@@ -632,7 +644,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         timelineStart: Math.max(0, timelineStart),
         durationSec,
         sourceIn: 0,
-        sourceOut: durationSec
+        sourceOut: durationSec,
+        metadata: storyBeat ? createClipStoryMetadata(storyBeat) : undefined
       };
       const nextClips = [nextClip];
 
@@ -655,6 +668,11 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       const insertedClipStart =
         nextTimelineClips.find((clip) => clip.id === nextClip.id)?.timelineStart ?? 0;
 
+      if (storyBeat) {
+        setStoryBeats((current) =>
+          insertStoryBeatForClip(current, storyBeat, nextTimelineClips, nextClip.id)
+        );
+      }
       setTimelineClips(nextTimelineClips);
       setSelectedClipId(nextClip.id);
       setSelectedAssetId(assetId);
@@ -681,6 +699,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         solidColor: normalizedColor,
         importedAt: new Date().toISOString()
       };
+      const storyBeat = createStoryBeatForTimelineAsset(nextAsset, normalizedDuration);
       const nextClip: EditorTimelineClip = {
         id: createClipId(),
         assetId,
@@ -688,7 +707,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         timelineStart: Math.max(0, timelineStart),
         durationSec: normalizedDuration,
         sourceIn: 0,
-        sourceOut: normalizedDuration
+        sourceOut: normalizedDuration,
+        metadata: createClipStoryMetadata(storyBeat)
       };
 
       setAssets((current) => [nextAsset, ...current]);
@@ -700,6 +720,9 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       const insertedClipStart =
         nextTimelineClips.find((clip) => clip.id === nextClip.id)?.timelineStart ?? 0;
 
+      setStoryBeats((current) =>
+        insertStoryBeatForClip(current, storyBeat, nextTimelineClips, nextClip.id)
+      );
       setTimelineClips(nextTimelineClips);
       setSelectedAssetId(assetId);
       setSelectedClipId(nextClip.id);
@@ -710,12 +733,108 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const moveClip = useCallback((clipId: string, timelineStart: number) => {
-    setTimelineClips((current) =>
-      moveLinkedClipsMagnetically(current, clipId, timelineStart)
-    );
+    setTimelineClips((current) => {
+      const nextClips = moveLinkedClipsMagnetically(current, clipId, timelineStart);
+      setStoryBeats((currentBeats) =>
+        reorderStoryBeatsByTimelineClips(currentBeats, nextClips)
+      );
+      return nextClips;
+    });
     setSelectedClipId(clipId);
     markProjectDirty();
   }, [markProjectDirty]);
+
+  const replaceClipAsset = useCallback(
+    (clipId: string, assetId: string) => {
+      const asset = assets.find((candidate) => candidate.id === assetId);
+      if (!asset || asset.kind === "audio") {
+        return;
+      }
+
+      setTimelineClips((current) => {
+        const targetClip = findClipById(current, clipId);
+        if (!targetClip) {
+          return current;
+        }
+
+        const linkedClip = findLinkedClip(current, targetClip);
+        const primaryVideoClip =
+          targetClip.trackId === "video-1"
+            ? targetClip
+            : linkedClip?.trackId === "video-1"
+              ? linkedClip
+              : undefined;
+        if (!primaryVideoClip) {
+          return current;
+        }
+
+        const sourceAudioClip = findLinkedClip(current, primaryVideoClip);
+        const durationSec = Math.max(
+          asset.durationSec || (asset.kind === "image" ? 5 : 8),
+          0.2
+        );
+        const storyBeat = createStoryBeatForTimelineAsset(
+          asset,
+          durationSec,
+          getClipStorySegmentId(primaryVideoClip) ?? createStoryBeatId()
+        );
+        const replacementVideoClip: EditorTimelineClip = {
+          ...primaryVideoClip,
+          assetId,
+          durationSec,
+          sourceIn: 0,
+          sourceOut: durationSec,
+          linkedClipId: undefined,
+          metadata: {
+            ...(primaryVideoClip.metadata ?? {}),
+            ...createClipStoryMetadata(storyBeat)
+          }
+        };
+        let replacementAudioClip: EditorTimelineClip | undefined;
+
+        if (asset.kind === "video" && (asset.metadata?.hasAudio ?? true)) {
+          const sourceAudioClipId = sourceAudioClip?.id ?? createClipId();
+          replacementVideoClip.linkedClipId = sourceAudioClipId;
+          replacementAudioClip = {
+            ...replacementVideoClip,
+            id: sourceAudioClipId,
+            trackId: "source-audio-1",
+            linkedClipId: replacementVideoClip.id
+          };
+        }
+
+        const nextClips = normalizeMagneticTimelineClips(
+          current.flatMap((clip) => {
+            if (clip.id === primaryVideoClip.id) {
+              return replacementAudioClip
+                ? [replacementVideoClip, replacementAudioClip]
+                : [replacementVideoClip];
+            }
+
+            if (clip.id === sourceAudioClip?.id) {
+              return [];
+            }
+
+            return [clip];
+          })
+        );
+
+        setStoryBeats((currentBeats) =>
+          updateStoryBeatAfterAssetReplacement(
+            currentBeats,
+            storyBeat,
+            nextClips,
+            replacementVideoClip.id
+          )
+        );
+        return nextClips;
+      });
+      setSelectedClipId(clipId);
+      setSelectedAssetId(assetId);
+      markProjectDirty();
+    },
+    [assets, markProjectDirty]
+  );
 
   const deleteClip = useCallback(
     (clipId?: string) => {
@@ -726,12 +845,20 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
 
       const linkedClip = findLinkedClip(timelineClips, targetClip);
       const removedClipIds = new Set([targetClip.id, linkedClip?.id].filter(Boolean));
-
-      setTimelineClips((current) =>
-        normalizeMagneticTimelineClips(
-          current.filter((clip) => !removedClipIds.has(clip.id))
-        )
+      const removedStoryBeatIds = new Set(
+        [getClipStorySegmentId(targetClip), linkedClip ? getClipStorySegmentId(linkedClip) : undefined]
+          .filter((beatId): beatId is string => Boolean(beatId))
       );
+
+      setTimelineClips((current) => {
+        const nextClips = normalizeMagneticTimelineClips(
+          current.filter((clip) => !removedClipIds.has(clip.id))
+        );
+        setStoryBeats((currentBeats) =>
+          removeDetachedStoryBeats(currentBeats, nextClips, removedStoryBeatIds)
+        );
+        return nextClips;
+      });
       setSelectedClipId(undefined);
       setSelectedAssetId(targetClip.assetId);
       setPlayheadSec(clampPlayhead(targetClip.timelineStart, timelineDurationSec));
@@ -752,13 +879,54 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         return;
       }
 
-      setTimelineClips(normalizeMagneticTimelineClips(splitResult.clips));
+      let nextClips = splitResult.clips;
+      const leftVideoClip = splitResult.primaryVideoLeftClipId
+        ? nextClips.find((clip) => clip.id === splitResult.primaryVideoLeftClipId)
+        : undefined;
+      const rightVideoClip = splitResult.primaryVideoRightClipId
+        ? nextClips.find((clip) => clip.id === splitResult.primaryVideoRightClipId)
+        : undefined;
+
+      if (leftVideoClip && rightVideoClip) {
+        const leftStoryBeat = resolveTimelineClipStoryBeat({
+          clip: leftVideoClip,
+          assets,
+          storyBeats,
+          durationSec: leftVideoClip.durationSec
+        });
+        const rightStoryBeat: EditorStoryBeat = {
+          ...leftStoryBeat,
+          id: createStoryBeatId(),
+          durationSec: normalizeStoryBeatDuration(rightVideoClip.durationSec)
+        };
+
+        nextClips = updateClipGroupStoryMetadata(
+          nextClips,
+          leftVideoClip.id,
+          leftStoryBeat
+        );
+        nextClips = updateClipGroupStoryMetadata(
+          nextClips,
+          rightVideoClip.id,
+          rightStoryBeat
+        );
+        setStoryBeats((current) =>
+          duplicateStoryBeatForSplit(
+            current,
+            leftStoryBeat,
+            rightStoryBeat,
+            nextClips
+          )
+        );
+      }
+
+      setTimelineClips(normalizeMagneticTimelineClips(nextClips));
       setSelectedClipId(splitResult.selectedClipId);
       setSelectedAssetId(splitResult.selectedAssetId);
       setPlayheadSec(clampPlayhead(splitTime, timelineDurationSec));
       markProjectDirty();
     },
-    [markProjectDirty, selectedClipId, timelineClips, timelineDurationSec]
+    [assets, markProjectDirty, selectedClipId, storyBeats, timelineClips, timelineDurationSec]
   );
 
   const setPlayhead = useCallback(
@@ -821,6 +989,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       addAssetToTimeline,
       addSolidColorToTimeline,
       moveClip,
+      replaceClipAsset,
       deleteClip,
       splitClip,
       setPlayhead,
@@ -843,6 +1012,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       isAiGeneratingStoryboard,
       storyboardGenerationProgress,
       moveClip,
+      replaceClipAsset,
       nudgePlayhead,
       openMediaPicker,
       openProjectFromPicker,
@@ -995,6 +1165,258 @@ function resolveAudioTargetTrack(
   targetTrackId: EditorTimelineTrackId | undefined
 ): "voiceover-1" | "music-1" {
   return targetTrackId === "voiceover-1" ? "voiceover-1" : "music-1";
+}
+
+function createStoryBeatId(): string {
+  return `story-${crypto.randomUUID()}`;
+}
+
+function createStoryBeatForTimelineAsset(
+  asset: EditorMediaAsset,
+  durationSec: number,
+  id = createStoryBeatId()
+): EditorStoryBeat {
+  return {
+    id,
+    description: createTimelineAssetStoryDescription(asset),
+    durationSec: normalizeStoryBeatDuration(durationSec)
+  };
+}
+
+function createTimelineAssetStoryDescription(asset: EditorMediaAsset): string {
+  if (asset.variant === "solid-color" && asset.solidColor) {
+    return `单色：${rgbColorToHex(asset.solidColor)}`;
+  }
+
+  if (asset.imported) {
+    return `导入：${asset.name}`;
+  }
+
+  return readStoryboardAssetText(asset) ?? asset.name;
+}
+
+function readStoryboardAssetText(asset: EditorMediaAsset): string | undefined {
+  const storyboardMetadata = asset.metadata?.probe?.storyboardAi;
+  if (!isRecord(storyboardMetadata)) {
+    return undefined;
+  }
+
+  const text = storyboardMetadata.text ?? storyboardMetadata.storyText;
+  return typeof text === "string" && text.trim().length > 0
+    ? text.trim()
+    : undefined;
+}
+
+function createClipStoryMetadata(
+  beat: EditorStoryBeat
+): Record<string, string> {
+  return {
+    storySegmentId: beat.id,
+    storyText: beat.description
+  };
+}
+
+function getClipStorySegmentId(clip: EditorTimelineClip): string | undefined {
+  const storySegmentId = clip.metadata?.storySegmentId;
+  return typeof storySegmentId === "string" && storySegmentId.length > 0
+    ? storySegmentId
+    : undefined;
+}
+
+function insertStoryBeatForClip(
+  storyBeats: EditorStoryBeat[],
+  storyBeat: EditorStoryBeat,
+  clips: EditorTimelineClip[],
+  clipId: string
+): EditorStoryBeat[] {
+  const contentBeats = storyBeats.filter((beat) => !isBlankStoryBeat(beat));
+  const nextContentBeats = contentBeats.filter((beat) => beat.id !== storyBeat.id);
+  const targetIndex = getOrderedTrackClips(clips, "video-1").findIndex(
+    (clip) => clip.id === clipId
+  );
+  const insertIndex =
+    targetIndex === -1
+      ? nextContentBeats.length
+      : Math.max(0, Math.min(nextContentBeats.length, targetIndex));
+
+  nextContentBeats.splice(insertIndex, 0, storyBeat);
+  return ensureTrailingBlankStoryBeat(nextContentBeats);
+}
+
+function reorderStoryBeatsByTimelineClips(
+  storyBeats: EditorStoryBeat[],
+  clips: EditorTimelineClip[]
+): EditorStoryBeat[] {
+  const contentBeats = storyBeats.filter((beat) => !isBlankStoryBeat(beat));
+  const beatById = new Map(contentBeats.map((beat) => [beat.id, beat]));
+  const orderedStoryBeatIds = uniqueStrings(
+    getOrderedTrackClips(clips, "video-1")
+      .map(getClipStorySegmentId)
+      .filter((beatId): beatId is string => Boolean(beatId))
+  );
+  const orderedClipBeats = orderedStoryBeatIds
+    .map((beatId) => beatById.get(beatId))
+    .filter((beat): beat is EditorStoryBeat => Boolean(beat));
+  const orderedBeatIdSet = new Set(orderedStoryBeatIds);
+  const remainingBeats = contentBeats.filter((beat) => !orderedBeatIdSet.has(beat.id));
+
+  return ensureTrailingBlankStoryBeat([...orderedClipBeats, ...remainingBeats]);
+}
+
+function reorderTimelineClipsByStoryBeatOrder(
+  clips: EditorTimelineClip[],
+  storySegmentIds: string[]
+): EditorTimelineClip[] {
+  const storySegmentOrder = new Map(storySegmentIds.map((beatId, index) => [beatId, index]));
+  const orderedVideoClips = getOrderedTrackClips(clips, "video-1");
+  const fallbackOrder = new Map(orderedVideoClips.map((clip, index) => [clip.id, index]));
+  const sortedVideoClips = [...orderedVideoClips].sort((firstClip, secondClip) => {
+    const firstStoryOrder = storySegmentOrder.get(getClipStorySegmentId(firstClip) ?? "");
+    const secondStoryOrder = storySegmentOrder.get(getClipStorySegmentId(secondClip) ?? "");
+
+    return (
+      (firstStoryOrder ?? Number.MAX_SAFE_INTEGER) -
+        (secondStoryOrder ?? Number.MAX_SAFE_INTEGER) ||
+      (fallbackOrder.get(firstClip.id) ?? 0) - (fallbackOrder.get(secondClip.id) ?? 0)
+    );
+  });
+
+  return normalizeMagneticTimelineClips(
+    replaceTrackOrder(clips, "video-1", sortedVideoClips)
+  );
+}
+
+function removeDetachedStoryBeats(
+  storyBeats: EditorStoryBeat[],
+  clips: EditorTimelineClip[],
+  removedStoryBeatIds: Set<string>
+): EditorStoryBeat[] {
+  if (removedStoryBeatIds.size === 0) {
+    return storyBeats;
+  }
+
+  const remainingStoryBeatIds = new Set(
+    getOrderedTrackClips(clips, "video-1")
+      .map(getClipStorySegmentId)
+      .filter((beatId): beatId is string => Boolean(beatId))
+  );
+  const nextBeats = storyBeats
+    .filter((beat) => !isBlankStoryBeat(beat))
+    .filter(
+      (beat) =>
+        !removedStoryBeatIds.has(beat.id) || remainingStoryBeatIds.has(beat.id)
+    );
+
+  return ensureTrailingBlankStoryBeat(nextBeats);
+}
+
+function resolveTimelineClipStoryBeat({
+  clip,
+  assets,
+  storyBeats,
+  durationSec
+}: {
+  clip: EditorTimelineClip;
+  assets: EditorMediaAsset[];
+  storyBeats: EditorStoryBeat[];
+  durationSec: number;
+}): EditorStoryBeat {
+  const storySegmentId = getClipStorySegmentId(clip) ?? createStoryBeatId();
+  const existingBeat = storyBeats.find((beat) => beat.id === storySegmentId);
+  if (existingBeat) {
+    return {
+      ...existingBeat,
+      durationSec: normalizeStoryBeatDuration(durationSec)
+    };
+  }
+
+  const asset = assets.find((candidate) => candidate.id === clip.assetId);
+  return asset
+    ? createStoryBeatForTimelineAsset(asset, durationSec, storySegmentId)
+    : {
+        id: storySegmentId,
+        description: "片段",
+        durationSec: normalizeStoryBeatDuration(durationSec)
+      };
+}
+
+function updateClipGroupStoryMetadata(
+  clips: EditorTimelineClip[],
+  clipId: string,
+  storyBeat: EditorStoryBeat
+): EditorTimelineClip[] {
+  const clip = findClipById(clips, clipId);
+  if (!clip) {
+    return clips;
+  }
+
+  const clipIds = new Set([clip.id]);
+  if (clip.linkedClipId) {
+    clipIds.add(clip.linkedClipId);
+  }
+  clips.forEach((candidate) => {
+    if (candidate.linkedClipId === clip.id) {
+      clipIds.add(candidate.id);
+    }
+  });
+
+  return clips.map((candidate) =>
+    clipIds.has(candidate.id)
+      ? {
+          ...candidate,
+          metadata: {
+            ...(candidate.metadata ?? {}),
+            ...createClipStoryMetadata(storyBeat)
+          }
+        }
+      : candidate
+  );
+}
+
+function duplicateStoryBeatForSplit(
+  storyBeats: EditorStoryBeat[],
+  leftStoryBeat: EditorStoryBeat,
+  rightStoryBeat: EditorStoryBeat,
+  clips: EditorTimelineClip[]
+): EditorStoryBeat[] {
+  const contentBeats = storyBeats.filter((beat) => !isBlankStoryBeat(beat));
+  const beatById = new Map(contentBeats.map((beat) => [beat.id, beat]));
+  beatById.set(leftStoryBeat.id, leftStoryBeat);
+  beatById.set(rightStoryBeat.id, rightStoryBeat);
+
+  const orderedStoryBeatIds = uniqueStrings(
+    getOrderedTrackClips(clips, "video-1")
+      .map(getClipStorySegmentId)
+      .filter((beatId): beatId is string => Boolean(beatId))
+  );
+  const orderedClipBeats = orderedStoryBeatIds
+    .map((beatId) => beatById.get(beatId))
+    .filter((beat): beat is EditorStoryBeat => Boolean(beat));
+  const orderedBeatIdSet = new Set(orderedStoryBeatIds);
+  const remainingBeats = contentBeats.filter((beat) => !orderedBeatIdSet.has(beat.id));
+
+  return ensureTrailingBlankStoryBeat([...orderedClipBeats, ...remainingBeats]);
+}
+
+function updateStoryBeatAfterAssetReplacement(
+  storyBeats: EditorStoryBeat[],
+  storyBeat: EditorStoryBeat,
+  clips: EditorTimelineClip[],
+  clipId: string
+): EditorStoryBeat[] {
+  if (storyBeats.some((beat) => beat.id === storyBeat.id)) {
+    return ensureTrailingBlankStoryBeat(
+      storyBeats
+        .filter((beat) => !isBlankStoryBeat(beat))
+        .map((beat) => (beat.id === storyBeat.id ? storyBeat : beat))
+    );
+  }
+
+  return insertStoryBeatForClip(storyBeats, storyBeat, clips, clipId);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 function insertClipGroupMagnetically(
@@ -1180,6 +1602,8 @@ function getMagneticInsertionIndex(
 
 interface SplitTimelineResult {
   clips: EditorTimelineClip[];
+  primaryVideoLeftClipId?: string;
+  primaryVideoRightClipId?: string;
   selectedAssetId: string;
   selectedClipId: string;
 }
@@ -1202,6 +1626,14 @@ function splitTimelineClips(
 
   const targetRightId = createClipId();
   const linkedRightId = linkedClip ? createClipId() : undefined;
+  const primaryVideoClip =
+    targetClip.trackId === "video-1"
+      ? targetClip
+      : linkedClip?.trackId === "video-1"
+        ? linkedClip
+        : undefined;
+  const primaryVideoRightClipId =
+    primaryVideoClip?.id === targetClip.id ? targetRightId : linkedRightId;
   const selectedClipId = targetRightId;
   const nextClips = clips.flatMap((clip) => {
     if (clip.id === targetClip.id) {
@@ -1217,6 +1649,8 @@ function splitTimelineClips(
 
   return {
     clips: nextClips,
+    primaryVideoLeftClipId: primaryVideoClip?.id,
+    primaryVideoRightClipId,
     selectedAssetId: targetClip.assetId,
     selectedClipId
   };
@@ -1304,6 +1738,10 @@ function normalizeStoryBeatDuration(durationSec: number): number {
   }
 
   return Math.max(0.1, Math.round(durationSec * 10) / 10);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function getDesktopFilePath(file: File): string | undefined {

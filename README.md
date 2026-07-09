@@ -137,7 +137,7 @@ MyFilm.aivproj/
 - 渲染缓存：`renderCache[]`。
 - 编辑历史：`editHistory.past/future`。
 
-本层包含路径管理、Asset 注册、Cache 管理和项目文件读写占位。后续可增加 schema migration，但不引入复杂数据库作为核心。
+本层包含路径管理、Asset 注册、Cache 管理和项目文件读写。项目文件按当前 schema 严格读取，发布版不保留旧 schema 迁移路径。
 
 ### 4. Local Media Engine
 

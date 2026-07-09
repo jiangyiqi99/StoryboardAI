@@ -9,7 +9,7 @@ import type { Asset, AssetKind, AssetMetadata } from "@shared/types/asset";
 import type { AiGenerationJob } from "@shared/types/ai";
 import type { Project } from "@shared/types/project";
 import type { StoryboardSegment } from "@shared/types/storyboard";
-import type { Clip, Timeline, Track, TrackKind } from "@shared/types/timeline";
+import type { Clip, Timeline, Track } from "@shared/types/timeline";
 import type {
   EditorMediaAsset,
   EditorRgbColor,
@@ -61,23 +61,38 @@ export const editorStateToProject = (
   baseProject: Project,
   state: ProjectSaveState
 ): Project => {
+  const existingAssetById = new Map(
+    baseProject.assets.map((asset) => [asset.id, asset])
+  );
+  const editorAssetById = new Map(state.assets.map((asset) => [asset.id, asset]));
+  const timelineClipByStoryBeatId = createTimelineClipByStoryBeatId(
+    state.timelineClips
+  );
   const storyboardSegments = editorStoryBeatsToProjectSegments(
     state.storyBeats,
-    baseProject.storyboardSegments
+    baseProject.storyboardSegments,
+    timelineClipByStoryBeatId
   );
   const storyboardBindings = createStoryboardAssociationBindings(storyboardSegments);
+  const storyboardBindingBySegmentId = new Map(
+    storyboardBindings.map((binding) => [binding.segment.id, binding])
+  );
   const storyboardBindingByAssetId = new Map(
     storyboardBindings
       .filter((binding) => Boolean(binding.segment.outputAssetId))
+      .filter((binding) =>
+        shouldApplyStoryboardAssetBinding(
+          binding,
+          editorAssetById,
+          existingAssetById
+        )
+      )
       .map((binding) => [binding.segment.outputAssetId!, binding])
   );
   const storyboardBindingByJobId = new Map(
     storyboardBindings
       .filter((binding) => Boolean(binding.segment.aiJobId))
       .map((binding) => [binding.segment.aiJobId!, binding])
-  );
-  const existingAssetById = new Map(
-    baseProject.assets.map((asset) => [asset.id, asset])
   );
 
   return {
@@ -92,6 +107,7 @@ export const editorStateToProject = (
     timeline: editorClipsToProjectTimeline(
       baseProject,
       state,
+      storyboardBindingBySegmentId,
       storyboardBindingByAssetId
     ),
     storyboardSegments,
@@ -168,6 +184,11 @@ const projectAssetToEditorAsset = (
     metadata: asset.metadata,
     imported: asset.origin === "imported",
     importedAt: asset.importedAt,
+    generatedByJobId: asset.generatedByJobId,
+    storyboardRef: asset.storyboardRef,
+    storyboardSegmentId: asset.storyboardSegmentId,
+    storyboardSegmentIndex: asset.storyboardSegmentIndex,
+    storyboardSegmentNumber: asset.storyboardSegmentNumber,
     variant: editorMetadata.variant,
     solidColor: editorMetadata.solidColor
   };
@@ -219,7 +240,7 @@ const projectTimelineToEditorClips = (
       return {
         id: clip.id,
         assetId: clip.assetId,
-        trackId: normalizeEditorTrackId(track.id, track.kind),
+        trackId: editorTrackIdField(track.id),
         timelineStart: clip.timelineStart,
         durationSec,
         sourceIn: clip.sourceIn,
@@ -234,8 +255,9 @@ const projectTimelineToEditorClips = (
 const editorClipsToProjectTimeline = (
   baseProject: Project,
   state: ProjectSaveState,
-  storyboardBindingByAssetId: Map<string, StoryboardAssociationBinding> =
-    new Map()
+  storyboardBindingBySegmentId: Map<string, StoryboardAssociationBinding> =
+    new Map(),
+  storyboardBindingByAssetId: Map<string, StoryboardAssociationBinding> = new Map()
 ): Timeline => {
   const duration = state.timelineClips.reduce(
     (maxEnd, clip) => Math.max(maxEnd, clip.timelineStart + clip.durationSec),
@@ -254,7 +276,8 @@ const editorClipsToProjectTimeline = (
         .map((clip) =>
           editorClipToProjectClip(
             clip,
-            storyboardBindingByAssetId.get(clip.assetId)
+            storyboardBindingBySegmentId.get(getClipStorySegmentId(clip) ?? "") ??
+              storyboardBindingByAssetId.get(clip.assetId)
           )
         )
     })),
@@ -318,7 +341,8 @@ const projectSegmentsToStoryBeats = (
 
 const editorStoryBeatsToProjectSegments = (
   storyBeats: EditorStoryBeat[],
-  existingSegments: StoryboardSegment[]
+  existingSegments: StoryboardSegment[],
+  timelineClipByStoryBeatId: Map<string, EditorTimelineClip>
 ): StoryboardSegment[] => {
   const existingById = new Map(
     existingSegments.map((segment) => [segment.id, segment])
@@ -328,6 +352,7 @@ const editorStoryBeatsToProjectSegments = (
     .filter((beat) => !isBlankStoryBeat(beat))
     .map((beat, index) => {
       const existingSegment = existingById.get(beat.id);
+      const timelineClip = timelineClipByStoryBeatId.get(beat.id);
       const association = createStoryboardAssociation(beat.id, index);
       return {
         ...existingSegment,
@@ -340,7 +365,12 @@ const editorStoryBeatsToProjectSegments = (
           beat.durationSec,
           DEFAULT_STORY_BEAT_DURATION_SEC
         ),
-        status: existingSegment?.status ?? "draft"
+        status: existingSegment?.status ?? "draft",
+        outputAssetId: timelineClip?.assetId ?? existingSegment?.outputAssetId,
+        timelineStart: timelineClip?.timelineStart ?? existingSegment?.timelineStart,
+        timelineEnd: timelineClip
+          ? roundTimelineTime(timelineClip.timelineStart + timelineClip.durationSec)
+          : existingSegment?.timelineEnd
       };
     });
 };
@@ -352,6 +382,53 @@ const createStoryboardAssociationBindings = (
     association: createStoryboardAssociation(segment.id, segment.index),
     segment
   }));
+
+const createTimelineClipByStoryBeatId = (
+  clips: EditorTimelineClip[]
+): Map<string, EditorTimelineClip> => {
+  const clipsByStoryBeatId = new Map<string, EditorTimelineClip>();
+
+  clips
+    .filter((clip) => clip.trackId === "video-1")
+    .sort((first, second) => first.timelineStart - second.timelineStart)
+    .forEach((clip) => {
+      const storySegmentId = getClipStorySegmentId(clip);
+      if (storySegmentId && !clipsByStoryBeatId.has(storySegmentId)) {
+        clipsByStoryBeatId.set(storySegmentId, clip);
+      }
+    });
+
+  return clipsByStoryBeatId;
+};
+
+const getClipStorySegmentId = (clip: EditorTimelineClip): string | undefined => {
+  const storySegmentId = clip.metadata?.storySegmentId;
+  return typeof storySegmentId === "string" && storySegmentId.length > 0
+    ? storySegmentId
+    : undefined;
+};
+
+const shouldApplyStoryboardAssetBinding = (
+  binding: StoryboardAssociationBinding,
+  editorAssetById: Map<string, EditorMediaAsset>,
+  existingAssetById: Map<string, Asset>
+): boolean => {
+  const assetId = binding.segment.outputAssetId;
+  if (!assetId) {
+    return false;
+  }
+
+  const editorAsset = editorAssetById.get(assetId);
+  const existingAsset = existingAssetById.get(assetId);
+  if (!editorAsset || editorAsset.imported || editorAsset.variant === "solid-color") {
+    return false;
+  }
+
+  return (
+    editorAsset.storyboardSegmentId === binding.segment.id ||
+    existingAsset?.storyboardSegmentId === binding.segment.id
+  );
+};
 
 const applyStoryboardAssetMetadata = (
   metadata: AssetMetadata,
@@ -521,10 +598,7 @@ const editorAssetKindToProjectKind = (asset: EditorMediaAsset): AssetKind => {
   return asset.kind;
 };
 
-const normalizeEditorTrackId = (
-  trackId: string,
-  trackKind: TrackKind
-): EditorTimelineTrackId => {
+const editorTrackIdField = (trackId: string): EditorTimelineTrackId => {
   if (
     trackId === "video-1" ||
     trackId === "source-audio-1" ||
@@ -534,7 +608,7 @@ const normalizeEditorTrackId = (
     return trackId;
   }
 
-  return trackKind === "video" ? "video-1" : "music-1";
+  throw new Error(`Invalid project file: unknown timeline track id ${trackId}.`);
 };
 
 const normalizePositiveNumber = (value: unknown, fallback: number): number => {

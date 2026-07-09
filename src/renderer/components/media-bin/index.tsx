@@ -1,14 +1,21 @@
-import { ChevronDown, Filter, MoreVertical, Music2, Plus, Search } from "lucide-react";
+import { ChevronDown, Filter, MoreVertical, Music2, Palette, Plus, Search } from "lucide-react";
 import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { useEditor } from "../../app/EditorContext";
 import { formatDuration } from "../../app/mediaImport";
-import { rgbColorToCss } from "../../app/solidColor";
+import {
+  DEFAULT_SOLID_DURATION_SEC,
+  normalizeSolidDuration,
+  rgbColorToCss
+} from "../../app/solidColor";
 import { isDesktopApiAvailable } from "../../ipc/api";
 
 export const MediaBin = () => {
   const { assets, importFiles, openMediaPicker, selectAsset, selectedAssetId } = useEditor();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importMessage, setImportMessage] = useState<string>("素材就绪");
+  const [solidDurationSec, setSolidDurationSec] = useState(DEFAULT_SOLID_DURATION_SEC);
+  const manualAssets = assets.filter((asset) => asset.imported);
+  const safeSolidDurationSec = normalizeSolidDuration(solidDurationSec);
 
   const handleImportClick = async () => {
     if (!isDesktopApiAvailable()) {
@@ -59,6 +66,12 @@ export const MediaBin = () => {
     );
   };
 
+  const handleSolidDragStart = (event: DragEvent<HTMLElement>) => {
+    event.dataTransfer.setData("application/x-aiv-ai-material", "solid-color");
+    event.dataTransfer.setData("application/x-aiv-solid-duration", String(safeSolidDurationSec));
+    event.dataTransfer.effectAllowed = "copy";
+  };
+
   return (
     <section
       className="panel media-bin-panel"
@@ -91,6 +104,35 @@ export const MediaBin = () => {
         type="file"
       />
 
+      <div className="media-bin-pinned">
+        <article
+          className="solid-template-card"
+          draggable
+          onDragStart={handleSolidDragStart}
+          title="拖入时间线添加单色片段"
+        >
+          <div className="solid-template-thumb">
+            <Palette size={30} />
+          </div>
+          <div className="solid-template-body">
+            <div className="asset-meta">
+              <span>单色素材</span>
+              <time>{formatDuration(safeSolidDurationSec)}</time>
+            </div>
+            <label className="field-stack compact-field">
+              <span>时长</span>
+              <input
+                min="0.2"
+                onChange={(event) => setSolidDurationSec(Number(event.currentTarget.value))}
+                step="0.1"
+                type="number"
+                value={solidDurationSec}
+              />
+            </label>
+          </div>
+        </article>
+      </div>
+
       <div className="tabs">
         {["全部", "视频", "图片", "音频", "文件夹"].map((tab, index) => (
           <button className={index === 0 ? "is-active" : ""} key={tab} type="button">
@@ -111,7 +153,7 @@ export const MediaBin = () => {
       </div>
 
       <div className="asset-grid">
-        {assets.map((asset) => (
+        {manualAssets.map((asset) => (
           <article
             className={asset.id === selectedAssetId ? "asset-card is-selected" : "asset-card"}
             draggable
