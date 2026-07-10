@@ -1901,6 +1901,10 @@ button {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.export-option-grid.mode {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .export-option-grid.codec {
   grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
 }
@@ -1923,6 +1927,23 @@ button {
   border-color: rgba(139, 101, 255, 0.82);
   background: rgba(118, 84, 237, 0.24);
   color: #fff;
+}
+
+.export-field input[readonly] {
+  color: #aeb8c4;
+}
+
+.export-status {
+  min-width: 0;
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #cbd4df;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .export-dialog-actions {

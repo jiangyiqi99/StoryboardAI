@@ -9,6 +9,7 @@ export const IPC_CHANNELS = {
   MEDIA_SELECT_FILES: "media:selectFiles",
   MEDIA_EXTRACT_FRAME: "media:extractFrame",
   MEDIA_EXTRACT_PREVIEW_FRAME: "media:extractPreviewFrame",
+  MEDIA_EXPORT_TIMELINE_CLIPS: "media:exportTimelineClips",
   MEDIA_RENDER_TIMELINE: "media:renderTimeline",
   APP_CONFIG_GET: "appConfig:get",
   APP_CONFIG_SAVE: "appConfig:save",

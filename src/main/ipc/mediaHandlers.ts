@@ -14,6 +14,8 @@ import { IPC_CHANNELS } from "@shared/ipc/channels";
 import type {
   ImportedMediaFile,
   ImportedMediaKind,
+  MediaExportTimelineClipsRequest,
+  MediaExportTimelineClipsResponse,
   MediaExtractPreviewFrameRequest,
   MediaImportFilesRequest,
   MediaExtractFrameRequest,
@@ -136,6 +138,12 @@ export const registerMediaHandlers = (services: AppServices): void => {
   );
 
   ipcMain.handle(
+    IPC_CHANNELS.MEDIA_EXPORT_TIMELINE_CLIPS,
+    (_event, request: MediaExportTimelineClipsRequest) =>
+      exportTimelineClips(request)
+  );
+
+  ipcMain.handle(
     IPC_CHANNELS.MEDIA_RENDER_TIMELINE,
     (_event, request: MediaRenderTimelineRequest) =>
       services.mediaEngine.render.renderTimeline(request)
@@ -212,6 +220,109 @@ async function importMediaFiles(
   }
 
   return importedFiles;
+}
+
+async function exportTimelineClips(
+  request: MediaExportTimelineClipsRequest
+): Promise<MediaExportTimelineClipsResponse> {
+  const projectRootPath = normalizeImportProjectRootPath(request.projectRootPath);
+  if (!projectRootPath) {
+    throw new Error("请先新建或打开项目");
+  }
+
+  const clips = request.clips
+    .filter((clip) => clip.sourcePath)
+    .sort((first, second) => first.timelineStart - second.timelineStart);
+  if (clips.length === 0) {
+    throw new Error("时间线上没有可导出的片段");
+  }
+
+  const outputDirectory = await getAvailableSequentialExportDirectory(
+    projectRootPath
+  );
+  await mkdir(outputDirectory, { recursive: true });
+
+  const indexWidth = Math.max(2, String(clips.length).length);
+  const files: MediaExportTimelineClipsResponse["files"] = [];
+
+  for (const [index, clip] of clips.entries()) {
+    const sourcePath = resolve(clip.sourcePath);
+    const sourceStat = await stat(sourcePath);
+    if (!sourceStat.isFile()) {
+      throw new Error(`${clip.assetName} 不是可导出的文件`);
+    }
+
+    const fileName = createSequentialClipFileName({
+      index: index + 1,
+      indexWidth,
+      assetName: clip.assetName,
+      sourcePath
+    });
+    const outputPath = join(outputDirectory, fileName);
+    await copyFile(sourcePath, outputPath);
+    files.push({
+      clipId: clip.clipId,
+      sourcePath,
+      outputPath,
+      fileName
+    });
+  }
+
+  return {
+    outputDirectory,
+    files
+  };
+}
+
+async function getAvailableSequentialExportDirectory(
+  projectRootPath: string
+): Promise<string> {
+  const rendersDirectory = getProjectDirectoryPath(projectRootPath, "renders");
+  const baseName = `sequential-clips-${formatExportTimestamp(new Date())}`;
+
+  for (let index = 0; index < 10000; index += 1) {
+    const candidateName = index === 0 ? baseName : `${baseName}-${index}`;
+    const candidatePath = join(rendersDirectory, candidateName);
+    if (!(await pathExists(candidatePath))) {
+      return candidatePath;
+    }
+  }
+
+  throw new Error("Unable to allocate export directory.");
+}
+
+function createSequentialClipFileName({
+  index,
+  indexWidth,
+  assetName,
+  sourcePath
+}: {
+  index: number;
+  indexWidth: number;
+  assetName: string;
+  sourcePath: string;
+}): string {
+  const safeName = sanitizeImportedFileName(assetName);
+  const parsedName = parse(safeName);
+  const extension = parsedName.ext || extname(sourcePath);
+  const baseName = (parsedName.name || "clip").replace(/\.+$/g, "") || "clip";
+  const prefix = String(index).padStart(indexWidth, "0");
+
+  return `${prefix}-${baseName}${extension}`;
+}
+
+function formatExportTimestamp(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    "-",
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds())
+  ].join("");
 }
 
 function normalizeImportProjectRootPath(

@@ -2,8 +2,10 @@ import { Download, X } from "lucide-react";
 
 export type ExportPreset = "faster" | "balanced" | "better";
 export type ExportCodec = "H264" | "HEVC" | "Prores" | "ProresHQ" | "ProresLT";
+export type ExportMode = "rendered-video" | "sequential-clips";
 
 export interface ExportSettings {
+  mode: ExportMode;
   bitrate: string;
   resolution: string;
   preset: ExportPreset;
@@ -13,11 +15,17 @@ export interface ExportSettings {
 interface ExportDialogProps {
   isOpen: boolean;
   settings: ExportSettings;
+  isExporting?: boolean;
+  status?: string;
   onChange(settings: ExportSettings): void;
   onClose(): void;
   onConfirm(): void;
 }
 
+const modeOptions: Array<{ label: string; value: ExportMode }> = [
+  { label: "成片导出", value: "rendered-video" },
+  { label: "按顺序导出单个片段", value: "sequential-clips" }
+];
 const resolutionOptions = ["原始分辨率", "3840 x 2160", "1920 x 1080", "1280 x 720"];
 const presetOptions: Array<{ label: string; value: ExportPreset }> = [
   { label: "更快", value: "faster" },
@@ -27,6 +35,7 @@ const presetOptions: Array<{ label: string; value: ExportPreset }> = [
 const codecOptions: ExportCodec[] = ["H264", "HEVC", "Prores", "ProresHQ", "ProresLT"];
 
 export const defaultExportSettings: ExportSettings = {
+  mode: "rendered-video",
   bitrate: "16 Mbps",
   resolution: "1920 x 1080",
   preset: "balanced",
@@ -35,7 +44,9 @@ export const defaultExportSettings: ExportSettings = {
 
 export const ExportDialog = ({
   isOpen,
+  isExporting = false,
   settings,
+  status,
   onChange,
   onClose,
   onConfirm
@@ -68,49 +79,14 @@ export const ExportDialog = ({
         </header>
 
         <div className="export-fields">
-          <label className="export-field">
-            <span>码率</span>
-            <input
-              inputMode="text"
-              onChange={(event) =>
-                onChange({
-                  ...settings,
-                  bitrate: event.target.value
-                })
-              }
-              placeholder="例如 16 Mbps"
-              type="text"
-              value={settings.bitrate}
-            />
-          </label>
-
-          <label className="export-field">
-            <span>分辨率</span>
-            <select
-              onChange={(event) =>
-                onChange({
-                  ...settings,
-                  resolution: event.target.value
-                })
-              }
-              value={settings.resolution}
-            >
-              {resolutionOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </label>
-
           <fieldset className="export-fieldset">
-            <legend>预设</legend>
-            <div className="export-option-grid three">
-              {presetOptions.map((option) => (
+            <legend>导出方式</legend>
+            <div className="export-option-grid mode">
+              {modeOptions.map((option) => (
                 <button
-                  aria-pressed={settings.preset === option.value}
+                  aria-pressed={settings.mode === option.value}
                   className={
-                    settings.preset === option.value
+                    settings.mode === option.value
                       ? "export-option is-active"
                       : "export-option"
                   }
@@ -118,7 +94,7 @@ export const ExportDialog = ({
                   onClick={() =>
                     onChange({
                       ...settings,
-                      preset: option.value
+                      mode: option.value
                     })
                   }
                   type="button"
@@ -129,38 +105,117 @@ export const ExportDialog = ({
             </div>
           </fieldset>
 
-          <fieldset className="export-fieldset">
-            <legend>编码格式</legend>
-            <div className="export-option-grid codec">
-              {codecOptions.map((codec) => (
-                <button
-                  aria-pressed={settings.codec === codec}
-                  className={
-                    settings.codec === codec ? "export-option is-active" : "export-option"
-                  }
-                  key={codec}
-                  onClick={() =>
+          {settings.mode === "rendered-video" ? (
+            <>
+              <label className="export-field">
+                <span>码率</span>
+                <input
+                  inputMode="text"
+                  onChange={(event) =>
                     onChange({
                       ...settings,
-                      codec
+                      bitrate: event.target.value
                     })
                   }
-                  type="button"
+                  placeholder="例如 16 Mbps"
+                  type="text"
+                  value={settings.bitrate}
+                />
+              </label>
+
+              <label className="export-field">
+                <span>分辨率</span>
+                <select
+                  onChange={(event) =>
+                    onChange({
+                      ...settings,
+                      resolution: event.target.value
+                    })
+                  }
+                  value={settings.resolution}
                 >
-                  {codec}
-                </button>
-              ))}
-            </div>
-          </fieldset>
+                  {resolutionOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <fieldset className="export-fieldset">
+                <legend>预设</legend>
+                <div className="export-option-grid three">
+                  {presetOptions.map((option) => (
+                    <button
+                      aria-pressed={settings.preset === option.value}
+                      className={
+                        settings.preset === option.value
+                          ? "export-option is-active"
+                          : "export-option"
+                      }
+                      key={option.value}
+                      onClick={() =>
+                        onChange({
+                          ...settings,
+                          preset: option.value
+                        })
+                      }
+                      type="button"
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+
+              <fieldset className="export-fieldset">
+                <legend>编码格式</legend>
+                <div className="export-option-grid codec">
+                  {codecOptions.map((codec) => (
+                    <button
+                      aria-pressed={settings.codec === codec}
+                      className={
+                        settings.codec === codec
+                          ? "export-option is-active"
+                          : "export-option"
+                      }
+                      key={codec}
+                      onClick={() =>
+                        onChange({
+                          ...settings,
+                          codec
+                        })
+                      }
+                      type="button"
+                    >
+                      {codec}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            </>
+          ) : (
+            <label className="export-field">
+              <span>文件名</span>
+              <input readOnly type="text" value="01-片段名.ext" />
+            </label>
+          )}
+
+          {status ? <p className="export-status">{status}</p> : null}
         </div>
 
         <footer className="export-dialog-actions">
-          <button className="ghost-button" onClick={onClose} type="button">
+          <button className="ghost-button" disabled={isExporting} onClick={onClose} type="button">
             取消
           </button>
-          <button className="primary-button" onClick={onConfirm} type="button">
+          <button
+            className="primary-button"
+            disabled={isExporting}
+            onClick={onConfirm}
+            type="button"
+          >
             <Download size={16} />
-            <span>确认</span>
+            <span>{isExporting ? "导出中" : "确认"}</span>
           </button>
         </footer>
       </section>

@@ -58,9 +58,12 @@ const EditorWorkspace = () => {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isProjectMenuOpen, setIsProjectMenuOpen] = useState(false);
   const [isNewProjectOpen, setIsNewProjectOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportStatus, setExportStatus] = useState<string | undefined>();
   const [exportSettings, setExportSettings] =
     useState<ExportSettings>(defaultExportSettings);
   const {
+    assets,
     createProject,
     isAiGeneratingStoryboard,
     isProjectDirty,
@@ -71,7 +74,8 @@ const EditorWorkspace = () => {
     projectMessage,
     projectRuntime,
     saveProject,
-    storyboardGenerationProgress
+    storyboardGenerationProgress,
+    timelineClips
   } = useEditor();
 
   const projectStatus = resolveProjectStatus({
@@ -91,6 +95,53 @@ const EditorWorkspace = () => {
   const saveCurrentProject = async () => {
     setIsProjectMenuOpen(false);
     await saveProject();
+  };
+
+  const openExportDialog = () => {
+    setExportStatus(undefined);
+    setIsExportOpen(true);
+  };
+
+  const updateExportSettings = (nextSettings: ExportSettings) => {
+    setExportStatus(undefined);
+    setExportSettings(nextSettings);
+  };
+
+  const confirmExport = async () => {
+    if (exportSettings.mode !== "sequential-clips") {
+      setIsExportOpen(false);
+      return;
+    }
+
+    if (!projectRuntime) {
+      setExportStatus("请先新建或打开项目");
+      return;
+    }
+
+    const exportableClips = createSequentialClipExportInputs(timelineClips, assets);
+    if (exportableClips.length === 0) {
+      setExportStatus("时间线上没有可导出的片段");
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      const result = await desktopApi.media.exportTimelineClips({
+        projectRootPath: projectRuntime.projectRootPath,
+        clips: exportableClips
+      });
+      const videoClipCount = countPrimaryVideoTimelineClips(timelineClips, assets);
+      const skippedCount = Math.max(0, videoClipCount - result.files.length);
+      setExportStatus(
+        skippedCount > 0
+          ? `已导出 ${result.files.length} 个片段，跳过 ${skippedCount} 个无源文件片段：${result.outputDirectory}`
+          : `已导出 ${result.files.length} 个片段：${result.outputDirectory}`
+      );
+    } catch (error) {
+      setExportStatus(getErrorMessage(error));
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   return (
@@ -164,7 +215,8 @@ const EditorWorkspace = () => {
           </button>
           <button
             className="primary-button"
-            onClick={() => setIsExportOpen(true)}
+            disabled={!isProjectOpen}
+            onClick={openExportDialog}
             type="button"
           >
             <Download size={16} />
@@ -226,10 +278,12 @@ const EditorWorkspace = () => {
       </main>
       <ExportDialog
         isOpen={isExportOpen}
-        onChange={setExportSettings}
+        isExporting={isExporting}
+        onChange={updateExportSettings}
         onClose={() => setIsExportOpen(false)}
-        onConfirm={() => setIsExportOpen(false)}
+        onConfirm={confirmExport}
         settings={exportSettings}
+        status={exportStatus}
       />
       <NewProjectDialog
         isOpen={isNewProjectOpen}
@@ -239,6 +293,47 @@ const EditorWorkspace = () => {
     </div>
   );
 };
+
+function createSequentialClipExportInputs(
+  timelineClips: ReturnType<typeof useEditor>["timelineClips"],
+  assets: ReturnType<typeof useEditor>["assets"]
+) {
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+
+  return timelineClips
+    .map((clip) => {
+      const asset = assetsById.get(clip.assetId);
+      if (
+        clip.trackId !== "video-1" ||
+        !asset ||
+        asset.kind === "audio" ||
+        !asset.absolutePath
+      ) {
+        return undefined;
+      }
+
+      return {
+        clipId: clip.id,
+        assetName: asset.name,
+        sourcePath: asset.absolutePath,
+        timelineStart: clip.timelineStart
+      };
+    })
+    .filter((clip): clip is NonNullable<typeof clip> => Boolean(clip))
+    .sort((first, second) => first.timelineStart - second.timelineStart);
+}
+
+function countPrimaryVideoTimelineClips(
+  timelineClips: ReturnType<typeof useEditor>["timelineClips"],
+  assets: ReturnType<typeof useEditor>["assets"]
+): number {
+  const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+
+  return timelineClips.filter((clip) => {
+    const asset = assetsById.get(clip.assetId);
+    return clip.trackId === "video-1" && asset && asset.kind !== "audio";
+  }).length;
+}
 
 interface ProjectStatusInput {
   isAiGeneratingStoryboard: boolean;

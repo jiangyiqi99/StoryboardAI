@@ -7,6 +7,8 @@ import type {
   ImportedMediaFile,
   MediaExtractFrameRequest,
   MediaExtractPreviewFrameRequest,
+  MediaExportTimelineClipsRequest,
+  MediaExportTimelineClipsResponse,
   MediaImportFilesRequest,
   MediaProbeRequest,
   MediaPreviewFrame,
@@ -54,6 +56,9 @@ export interface AivDesktopApi {
     extractPreviewFrame(
       request: MediaExtractPreviewFrameRequest
     ): Promise<MediaPreviewFrame>;
+    exportTimelineClips(
+      request: MediaExportTimelineClipsRequest
+    ): Promise<MediaExportTimelineClipsResponse>;
     renderTimeline(request: MediaRenderTimelineRequest): Promise<string>;
     getPathForFile(file: File): string;
   };

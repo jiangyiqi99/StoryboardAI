@@ -120,6 +120,30 @@ export interface MediaRenderTimelineRequest {
   range?: TimelineRange;
 }
 
+export interface MediaExportTimelineClipInput {
+  clipId: string;
+  assetName: string;
+  sourcePath: string;
+  timelineStart: number;
+}
+
+export interface MediaExportTimelineClipsRequest {
+  projectRootPath: string;
+  clips: MediaExportTimelineClipInput[];
+}
+
+export interface MediaExportTimelineClipFile {
+  clipId: string;
+  sourcePath: string;
+  outputPath: string;
+  fileName: string;
+}
+
+export interface MediaExportTimelineClipsResponse {
+  outputDirectory: string;
+  files: MediaExportTimelineClipFile[];
+}
+
 export interface AiGenerateStoryboardRequest {
   projectRootPath: string;
   script: string;
@@ -238,6 +262,10 @@ export interface IpcInvokeMap {
   "media:extractPreviewFrame": {
     request: MediaExtractPreviewFrameRequest;
     response: MediaPreviewFrame;
+  };
+  "media:exportTimelineClips": {
+    request: MediaExportTimelineClipsRequest;
+    response: MediaExportTimelineClipsResponse;
   };
   "media:renderTimeline": {
     request: MediaRenderTimelineRequest;
