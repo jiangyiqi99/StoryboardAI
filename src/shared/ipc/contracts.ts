@@ -15,6 +15,7 @@ import type {
   ProjectSettings
 } from "../types/project";
 import type { TimelineRange, TrackId } from "../types/timeline";
+import type { StoryScriptDocumentFormat } from "../storyScriptDocuments";
 
 export interface ProjectCreateRequest {
   name: string;
@@ -66,6 +67,26 @@ export interface ProjectSelectOpenLocationRequest {
 
 export interface ProjectSelectOpenLocationResponse {
   projectRootPath: string;
+}
+
+export interface StoryScriptSelectImportFileRequest {
+  defaultPath?: string;
+}
+
+export interface StoryScriptImportFile {
+  filePath: string;
+  fileName: string;
+  format: StoryScriptDocumentFormat;
+  content: string;
+}
+
+export interface StoryScriptSaveTemplateRequest {
+  format: StoryScriptDocumentFormat;
+  defaultPath?: string;
+}
+
+export interface StoryScriptSaveTemplateResponse {
+  filePath: string;
 }
 
 export interface MediaProbeRequest {
@@ -242,6 +263,14 @@ export interface IpcInvokeMap {
   "project:selectOpenLocation": {
     request: ProjectSelectOpenLocationRequest;
     response: ProjectSelectOpenLocationResponse | null;
+  };
+  "storyScript:selectImportFile": {
+    request: StoryScriptSelectImportFileRequest;
+    response: StoryScriptImportFile | null;
+  };
+  "storyScript:saveTemplate": {
+    request: StoryScriptSaveTemplateRequest;
+    response: StoryScriptSaveTemplateResponse | null;
   };
   "media:probe": {
     request: MediaProbeRequest;

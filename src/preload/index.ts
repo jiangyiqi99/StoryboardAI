@@ -24,6 +24,12 @@ export const desktopApi: AivDesktopApi = {
     selectOpenLocation: (request = {}) =>
       invoke(IPC_CHANNELS.PROJECT_SELECT_OPEN_LOCATION, request)
   },
+  storyScript: {
+    selectImportFile: (request = {}) =>
+      invoke(IPC_CHANNELS.STORY_SCRIPT_SELECT_IMPORT_FILE, request),
+    saveTemplate: (request) =>
+      invoke(IPC_CHANNELS.STORY_SCRIPT_SAVE_TEMPLATE, request)
+  },
   media: {
     probe: (request) => invoke(IPC_CHANNELS.MEDIA_PROBE, request),
     importFiles: (request) => invoke(IPC_CHANNELS.MEDIA_IMPORT_FILES, request),

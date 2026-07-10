@@ -21,7 +21,11 @@ import type {
   ProjectSelectCreateDirectoryResponse,
   ProjectSelectOpenLocationRequest,
   ProjectSelectOpenLocationResponse,
-  ProjectSession
+  ProjectSession,
+  StoryScriptImportFile,
+  StoryScriptSaveTemplateRequest,
+  StoryScriptSaveTemplateResponse,
+  StoryScriptSelectImportFileRequest
 } from "./contracts";
 import type { GenerateVideoResponse } from "../ai-routing";
 import type {
@@ -47,6 +51,14 @@ export interface AivDesktopApi {
     selectOpenLocation(
       request?: ProjectSelectOpenLocationRequest
     ): Promise<ProjectSelectOpenLocationResponse | null>;
+  };
+  storyScript: {
+    selectImportFile(
+      request?: StoryScriptSelectImportFileRequest
+    ): Promise<StoryScriptImportFile | null>;
+    saveTemplate(
+      request: StoryScriptSaveTemplateRequest
+    ): Promise<StoryScriptSaveTemplateResponse | null>;
   };
   media: {
     probe(request: MediaProbeRequest): Promise<AssetMetadata>;

@@ -58,6 +58,8 @@ export interface EditorStoryBeat {
   durationSec: number;
 }
 
+export type StoryScriptImportMode = "overwrite" | "append";
+
 export interface ImportMediaResult {
   assets: EditorMediaAsset[];
   errors: string[];

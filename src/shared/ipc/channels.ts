@@ -4,6 +4,8 @@ export const IPC_CHANNELS = {
   PROJECT_SAVE: "project:save",
   PROJECT_SELECT_CREATE_DIRECTORY: "project:selectCreateDirectory",
   PROJECT_SELECT_OPEN_LOCATION: "project:selectOpenLocation",
+  STORY_SCRIPT_SELECT_IMPORT_FILE: "storyScript:selectImportFile",
+  STORY_SCRIPT_SAVE_TEMPLATE: "storyScript:saveTemplate",
   MEDIA_PROBE: "media:probe",
   MEDIA_IMPORT_FILES: "media:importFiles",
   MEDIA_SELECT_FILES: "media:selectFiles",

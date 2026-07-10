@@ -18,6 +18,10 @@ const createUnavailableDesktopApi = (): AivDesktopApi => {
       selectCreateDirectory: rejectDesktopUnavailable,
       selectOpenLocation: rejectDesktopUnavailable
     },
+    storyScript: {
+      selectImportFile: rejectDesktopUnavailable,
+      saveTemplate: rejectDesktopUnavailable
+    },
     media: {
       probe: rejectDesktopUnavailable,
       importFiles: rejectDesktopUnavailable,

@@ -1,6 +1,13 @@
-import { Clock3, GripVertical, RefreshCw, Sparkles } from "lucide-react";
+import {
+  Clock3,
+  FileUp,
+  GripVertical,
+  RefreshCw,
+  Sparkles
+} from "lucide-react";
 import { useState, type DragEvent } from "react";
 import { useEditor } from "../../app/EditorContext";
+import { StoryScriptImportDialog } from "../story-script-import";
 
 export const StoryScriptPanel = () => {
   const {
@@ -15,6 +22,7 @@ export const StoryScriptPanel = () => {
   } = useEditor();
   const [draggedBeatId, setDraggedBeatId] = useState<string>();
   const [dropTargetId, setDropTargetId] = useState<string>();
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const hasStoryContent = storyBeats.some(
     (beat) => beat.description.trim().length > 0
   );
@@ -77,6 +85,14 @@ export const StoryScriptPanel = () => {
           <p>{storyBeats.length - 1} 个分镜</p>
         </div>
         <div className="story-script-actions">
+          <button
+            className="ghost-button compact story-import-button"
+            onClick={() => setIsImportDialogOpen(true)}
+            type="button"
+          >
+            <FileUp size={14} />
+            <span>导入</span>
+          </button>
           <button
             className="story-generate-button"
             disabled={!hasStoryContent || isAiGeneratingStoryboard}
@@ -247,6 +263,10 @@ export const StoryScriptPanel = () => {
           );
         })}
       </div>
+      <StoryScriptImportDialog
+        isOpen={isImportDialogOpen}
+        onClose={() => setIsImportDialogOpen(false)}
+      />
     </section>
   );
 };

@@ -14,6 +14,7 @@ import type {
   ProjectSession
 } from "@shared/ipc/contracts";
 import type { Project, ProjectRuntimeContext } from "@shared/types/project";
+import type { StoryScriptDocumentBeat } from "@shared/storyScriptDocuments";
 import {
   createEditorAssetFromFile,
   createEditorAssetFromImportedFile,
@@ -25,7 +26,8 @@ import type {
   EditorStoryBeat,
   EditorTimelineClip,
   EditorTimelineTrackId,
-  ImportMediaResult
+  ImportMediaResult,
+  StoryScriptImportMode
 } from "./editorTypes";
 import { desktopApi } from "../ipc/api";
 import {
@@ -89,6 +91,10 @@ interface EditorContextValue {
   selectAsset(assetId: string): void;
   selectClip(clipId: string): void;
   updateStoryBeat(beatId: string, changes: Partial<Omit<EditorStoryBeat, "id">>): void;
+  importStoryBeats(
+    beats: StoryScriptDocumentBeat[],
+    mode: StoryScriptImportMode
+  ): void;
   toggleStoryBeatGenerationSelection(beatId: string): void;
   moveStoryBeat(beatId: string, targetBeatId: string): void;
   addAssetToTimeline(
@@ -593,6 +599,51 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     [markProjectDirty]
   );
 
+  const importStoryBeats = useCallback(
+    (beats: StoryScriptDocumentBeat[], mode: StoryScriptImportMode) => {
+      if (beats.length === 0) {
+        return;
+      }
+
+      const normalizedBeats = beats.map((beat) => ({
+        description: beat.description.trim(),
+        durationSec: normalizeStoryBeatDuration(beat.durationSec)
+      }));
+      setStoryBeats((current) => {
+        const currentContent = current.filter((beat) => !isBlankStoryBeat(beat));
+        if (mode === "append") {
+          return ensureTrailingBlankStoryBeat([
+            ...currentContent,
+            ...normalizedBeats.map((beat) => ({
+              id: createStoryBeatId(),
+              ...beat
+            }))
+          ]);
+        }
+
+        const overwrittenBeats = currentContent.map((beat, index) =>
+          normalizedBeats[index]
+            ? {
+                ...beat,
+                ...normalizedBeats[index]
+              }
+            : beat
+        );
+        const addedBeats = normalizedBeats
+          .slice(currentContent.length)
+          .map((beat) => ({
+            id: createStoryBeatId(),
+            ...beat
+          }));
+        return ensureTrailingBlankStoryBeat(
+          [...overwrittenBeats, ...addedBeats]
+        );
+      });
+      markProjectDirty();
+    },
+    [markProjectDirty]
+  );
+
   const toggleStoryBeatGenerationSelection = useCallback((beatId: string) => {
     setSelectedStoryBeatIdsForGeneration((current) =>
       current.includes(beatId)
@@ -990,6 +1041,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectAsset,
       selectClip,
       updateStoryBeat,
+      importStoryBeats,
       toggleStoryBeatGenerationSelection,
       moveStoryBeat,
       addAssetToTimeline,
@@ -1011,6 +1063,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       createProject,
       deleteClip,
       generateStoryboardVideos,
+      importStoryBeats,
       importFiles,
       importPaths,
       isProjectDirty,

@@ -1,9 +1,10 @@
-import { Clock3, Film, Grid2X2, Plus, Sparkles } from "lucide-react";
+import { Clock3, FileUp, Film, Grid2X2, Plus, Sparkles } from "lucide-react";
 import { useMemo, useState, type DragEvent } from "react";
 import { useEditor } from "../../app/EditorContext";
 import type { EditorMediaAsset, EditorTimelineClip } from "../../app/editorTypes";
 import { formatDuration } from "../../app/mediaImport";
 import { rgbColorToCss } from "../../app/solidColor";
+import { StoryScriptImportDialog } from "../story-script-import";
 
 interface StoryboardItem {
   clip: EditorTimelineClip;
@@ -24,6 +25,7 @@ export const StoryboardPanel = () => {
   } = useEditor();
   const [draggedClipId, setDraggedClipId] = useState<string>();
   const [dropTargetClipId, setDropTargetClipId] = useState<string>();
+  const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
   const storyboardItems = useMemo(
     () => createStoryboardItems(timelineClips, assets, storyBeats),
     [assets, storyBeats, timelineClips]
@@ -92,8 +94,12 @@ export const StoryboardPanel = () => {
             <Sparkles size={15} />
             <span>生成分镜</span>
           </button>
-          <button className="ghost-button compact" type="button">
-            <Plus size={15} />
+          <button
+            className="ghost-button compact"
+            onClick={() => setIsImportDialogOpen(true)}
+            type="button"
+          >
+            <FileUp size={15} />
             <span>导入脚本</span>
           </button>
         </div>
@@ -169,6 +175,10 @@ export const StoryboardPanel = () => {
           </button>
         ) : null}
       </div>
+      <StoryScriptImportDialog
+        isOpen={isImportDialogOpen}
+        onClose={() => setIsImportDialogOpen(false)}
+      />
     </section>
   );
 };
