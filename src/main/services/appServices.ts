@@ -36,6 +36,7 @@ export const createAppServices = (): AppServices => {
     appConfig,
     projectFiles,
     mediaEngine,
+    nativeMediaRuntime,
     apiRouter,
     aiOrchestrator
   };

@@ -103,7 +103,15 @@ export interface NativeMediaAsset {
   probe: NativeMediaProbe;
 }
 
-export type NativeTimelineProject = Pick<Project, "assets" | "settings" | "timeline">;
+export interface NativeTimelineProject
+  extends Pick<Project, "assets" | "settings" | "timeline"> {
+  /**
+   * Paths are runtime-only and are intentionally not written to project.json.
+   * Project assets retain relative paths; the Electron main process resolves
+   * them before the Go sidecar opens an asset.
+   */
+  assetPaths: Record<string, string>;
+}
 
 export interface NativePlaybackSession {
   id: string;

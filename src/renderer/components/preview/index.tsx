@@ -10,370 +10,272 @@ import {
   ZoomIn
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MutableRefObject } from "react";
+import type { NativeTimelineProject, NativeVideoFrame } from "@shared/types/native-media";
+import type { EditorMediaAsset, EditorTimelineClip } from "../../app/editorTypes";
 import { useEditor } from "../../app/EditorContext";
 import { formatTimecode } from "../../app/mediaImport";
 import { rgbColorToCss } from "../../app/solidColor";
-import type { TimelinePreviewTarget } from "../../app/EditorContext";
+import { desktopApi } from "../../ipc/api";
 
-type VideoBufferIndex = 0 | 1;
+type NativePreviewState =
+  | "idle"
+  | "loading"
+  | "decode-pending"
+  | "ready"
+  | "decode-failed"
+  | "end-of-stream";
 
-interface VideoBufferState {
-  sourceKey: string;
-  url?: string;
-  poster?: string;
-  sourceTime: number;
+const PREVIEW_CLOCK_COMMIT_INTERVAL_MS = 33;
+
+interface QueuedRenderRequest {
+  timelineTime: number;
+  seek: boolean;
 }
-
-interface VideoBufferRequest {
-  sourceKey: string;
-  url: string;
-  poster?: string;
-  sourceTime: number;
-}
-
-const emptyVideoBuffer = (index: VideoBufferIndex): VideoBufferState => ({
-  sourceKey: `empty-${index}`,
-  sourceTime: 0
-});
 
 export const Preview = () => {
   const {
+    assets,
     playheadSec,
     resolveTimelinePreview,
     selectedAsset,
     setPlayhead,
     timelineClips,
     timelineDurationSec,
-    timelineFps
+    timelineFps,
+    project
   } = useEditor();
-  const videoRefs = useRef<Array<HTMLVideoElement | null>>([null, null]);
-  const autoPlayOnSourceChangeRef = useRef(false);
-  const activeBufferIndexRef = useRef<VideoBufferIndex>(0);
-  const videoBuffersRef = useRef<[VideoBufferState, VideoBufferState]>([
-    emptyVideoBuffer(0),
-    emptyVideoBuffer(1)
-  ]);
-  const isPlayingRef = useRef(false);
-  const pendingSeekTimeRef = useRef<number | undefined>();
-  const playbackLastCommitPerformanceRef = useRef(0);
-  const playbackSourceKeyRef = useRef<string | undefined>();
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sessionIdRef = useRef<string>();
+  const sessionGenerationRef = useRef(0);
+  const framePendingRef = useRef(false);
+  const queuedRenderRef = useRef<QueuedRenderRequest>();
+  const hasFrameRef = useRef(false);
+  const playheadRef = useRef(playheadSec);
+  const resolveTimelinePreviewRef = useRef(resolveTimelinePreview);
+  const selectedAssetRef = useRef(selectedAsset);
+  const hasTimelineClipsRef = useRef(timelineClips.length > 0);
   const playbackStartPerformanceRef = useRef(0);
   const playbackStartTimelineRef = useRef(0);
-  const suppressPauseRef = useRef(false);
-  const sourceTimeRef = useRef(0);
-  const [activeBufferIndex, setActiveBufferIndex] = useState<VideoBufferIndex>(0);
-  const [videoBuffers, setVideoBuffers] = useState<[VideoBufferState, VideoBufferState]>([
-    emptyVideoBuffer(0),
-    emptyVideoBuffer(1)
-  ]);
-  const [currentTime, setCurrentTime] = useState(0);
+  const playbackLastCommitPerformanceRef = useRef(0);
+  const playbackLastQueuedFrameTimeRef = useRef(-Infinity);
+  const renderAtRef = useRef<(time: number, seek: boolean) => Promise<void>>(
+    async () => undefined
+  );
+  const [previewState, setPreviewState] = useState<NativePreviewState>("idle");
+  const [previewError, setPreviewError] = useState<string>();
   const [isPlaying, setIsPlaying] = useState(false);
+  const [frameOpacity, setFrameOpacity] = useState(1);
+
   const timelinePreview = resolveTimelinePreview(playheadSec);
   const hasTimelineClips = timelineClips.length > 0;
   const previewAsset = timelinePreview?.asset ?? (hasTimelineClips ? undefined : selectedAsset);
-  const mediaUrl = previewAsset?.fileUrl ?? previewAsset?.objectUrl;
-  const canPlayVideo = previewAsset?.kind === "video" && Boolean(mediaUrl);
-  const sourceTime = timelinePreview?.sourceTime ?? currentTime;
-  const sourceKey = timelinePreview
-    ? getTimelinePreviewSourceKey(timelinePreview)
-    : `${previewAsset?.id ?? "empty"}:asset`;
-  const displayTime = hasTimelineClips ? playheadSec : currentTime;
-  const timelinePlaybackEndSec = useMemo(
-    () =>
-      timelineClips.reduce(
-        (maxEnd, clip) => Math.max(maxEnd, clip.timelineStart + clip.durationSec),
-        0
-      ),
-    [timelineClips]
-  );
-  const currentBufferRequest = useMemo<VideoBufferRequest | undefined>(() => {
-    if (!canPlayVideo || !mediaUrl) {
-      return undefined;
-    }
-
-    return {
-      sourceKey,
-      url: mediaUrl,
-      poster: previewAsset?.thumbnailUrl,
-      sourceTime
-    };
-  }, [canPlayVideo, mediaUrl, previewAsset?.thumbnailUrl, sourceKey, sourceTime]);
-  const nextTimelinePreview = useMemo(() => {
-    const clip = timelinePreview?.clip;
-    if (!clip) {
-      return undefined;
-    }
-
-    const nextTimelineTime = Math.min(
-      timelineDurationSec,
-      clip.timelineStart + clip.durationSec
+  const hasNativeVideoAtPlayhead = previewAsset?.kind === "video";
+  const displayImage = previewAsset?.solidColor
+    ? undefined
+    : previewAsset?.thumbnailUrl ?? previewAsset?.fileUrl ?? previewAsset?.objectUrl;
+  const nativePoster = previewAsset?.thumbnailUrl;
+  const playbackEndSec = useMemo(() => {
+    const timelineEnd = timelineClips.reduce(
+      (end, clip) => Math.max(end, clip.timelineStart + clip.durationSec),
+      0
     );
-    const nextPreview =
-      resolveTimelinePreview(nextTimelineTime) ??
-      resolveTimelinePreview(Math.min(timelineDurationSec, nextTimelineTime + 0.001));
-
-    return nextPreview?.clip.id === clip.id ? undefined : nextPreview;
-  }, [resolveTimelinePreview, timelineDurationSec, timelinePreview?.clip]);
-  const nextBufferRequest = useMemo(
-    () => getVideoBufferRequest(nextTimelinePreview),
-    [nextTimelinePreview]
+    return timelineEnd || selectedAsset?.durationSec || timelineDurationSec;
+  }, [selectedAsset?.durationSec, timelineClips, timelineDurationSec]);
+  const frameStep = useMemo(
+    () => 1 / (timelineFps ?? previewAsset?.fps ?? 24),
+    [previewAsset?.fps, timelineFps]
   );
-  const activeBuffer = videoBuffers[activeBufferIndex];
-  const standbyBufferIndex = getStandbyBufferIndex(activeBufferIndex);
-  const standbyBuffer = videoBuffers[standbyBufferIndex];
+  const nativeTimeline = useMemo(
+    () =>
+      createNativePreviewTimeline({
+        assets,
+        clips: timelineClips,
+        selectedAsset,
+        hasTimelineClips,
+        timelineDurationSec: playbackEndSec,
+        fps: timelineFps ?? project?.settings.fps ?? 24,
+        settings: project?.settings
+      }),
+    [
+      assets,
+      hasTimelineClips,
+      playbackEndSec,
+      project?.settings,
+      selectedAsset,
+      timelineClips,
+      timelineFps
+    ]
+  );
 
   useEffect(() => {
-    sourceTimeRef.current = sourceTime;
-  }, [sourceTime]);
+    playheadRef.current = playheadSec;
+    resolveTimelinePreviewRef.current = resolveTimelinePreview;
+    selectedAssetRef.current = selectedAsset;
+    hasTimelineClipsRef.current = hasTimelineClips;
+  }, [hasTimelineClips, playheadSec, resolveTimelinePreview, selectedAsset]);
 
-  useEffect(() => {
-    isPlayingRef.current = isPlaying;
-  }, [isPlaying]);
-
-  useEffect(() => {
-    activeBufferIndexRef.current = activeBufferIndex;
-  }, [activeBufferIndex]);
-
-  useEffect(() => {
-    videoBuffersRef.current = videoBuffers;
-  }, [videoBuffers]);
-
-  useEffect(() => {
-    setVideoBuffers((current) => {
-      const activeIndex = activeBufferIndexRef.current;
-      const activeBuffer = current[activeIndex];
-      const nextActiveBuffer = currentBufferRequest
-        ? {
-            ...activeBuffer,
-            ...currentBufferRequest
-          }
-        : emptyVideoBuffer(activeIndex);
-
-      if (
-        activeBuffer.sourceKey === nextActiveBuffer.sourceKey &&
-        activeBuffer.url === nextActiveBuffer.url &&
-        activeBuffer.poster === nextActiveBuffer.poster
-      ) {
-        return current;
-      }
-
-      return replaceVideoBuffer(current, activeIndex, nextActiveBuffer);
-    });
-  }, [
-    currentBufferRequest?.poster,
-    currentBufferRequest?.sourceKey,
-    currentBufferRequest?.url
-  ]);
-
-  useEffect(() => {
-    setVideoBuffers((current) => {
-      const standbyIndex = getStandbyBufferIndex(activeBufferIndexRef.current);
-      const currentStandbyBuffer = current[standbyIndex];
-      const nextStandbyBuffer = nextBufferRequest
-        ? {
-            ...currentStandbyBuffer,
-            ...nextBufferRequest
-          }
-        : emptyVideoBuffer(standbyIndex);
-
-      if (
-        currentStandbyBuffer.sourceKey === nextStandbyBuffer.sourceKey &&
-        currentStandbyBuffer.url === nextStandbyBuffer.url &&
-        currentStandbyBuffer.poster === nextStandbyBuffer.poster &&
-        Math.abs(currentStandbyBuffer.sourceTime - nextStandbyBuffer.sourceTime) <= 0.001
-      ) {
-        return current;
-      }
-
-      return replaceVideoBuffer(current, standbyIndex, nextStandbyBuffer);
-    });
-  }, [
-    activeBufferIndex,
-    nextBufferRequest?.poster,
-    nextBufferRequest?.sourceKey,
-    nextBufferRequest?.sourceTime,
-    nextBufferRequest?.url
-  ]);
-
-  const seekVideo = useCallback((time: number) => {
-    const video = videoRefs.current[activeBufferIndexRef.current];
-    if (!video || !Number.isFinite(time)) {
-      return false;
+  const clearCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (canvas && context) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
     }
-
-    const nextTime = Math.max(0, time);
-    if (video.readyState < 1) {
-      pendingSeekTimeRef.current = nextTime;
-      return false;
-    }
-
-    if (Math.abs(video.currentTime - nextTime) > 0.04) {
-      video.currentTime = nextTime;
-    }
-    pendingSeekTimeRef.current = undefined;
-    return true;
+    hasFrameRef.current = false;
   }, []);
 
-  const seekVideoAndWait = useCallback(async (time: number) => {
-    const video = videoRefs.current[activeBufferIndexRef.current];
-    if (!video || !Number.isFinite(time)) {
+  const drawFrame = useCallback((frame: NativeVideoFrame) => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
       return;
     }
 
-    const nextTime = Math.max(0, time);
-    if (video.readyState < 1) {
-      pendingSeekTimeRef.current = nextTime;
-      await waitForMediaEvent(video, "loadedmetadata", 700);
+    const image = frameToImageData(frame);
+    canvas.width = frame.width;
+    canvas.height = frame.height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("无法创建原生预览画布上下文");
     }
-
-    if (Math.abs(video.currentTime - nextTime) <= 0.04) {
-      pendingSeekTimeRef.current = undefined;
-      setCurrentTime(nextTime);
-      return;
-    }
-
-    video.currentTime = nextTime;
-    setCurrentTime(nextTime);
-    pendingSeekTimeRef.current = undefined;
-    await waitForMediaEvent(video, "seeked", 700);
+    context.putImageData(image, 0, 0);
+    setFrameOpacity(frame.opacity);
   }, []);
 
-  useEffect(() => {
-    const video = videoRefs.current[activeBufferIndex];
-    if (!video || !activeBuffer.url) {
-      pendingSeekTimeRef.current = undefined;
-      setCurrentTime(0);
-      setIsPlaying(false);
-      return;
-    }
+  const renderAt = useCallback(
+    async (timelineTime: number, seek: boolean) => {
+      const queued = queuedRenderRef.current;
+      // A native frame is considerably more expensive than a browser video
+      // paint. Keep only the newest clock position while one request is in
+      // flight, so scrubbing and RAF ticks cannot form an IPC backlog.
+      queuedRenderRef.current = {
+        timelineTime,
+        seek: seek || queued?.seek === true
+      };
+      if (framePendingRef.current) return;
 
-    const initialSourceTime = activeBuffer.sourceTime;
-    const shouldResumePlayback =
-      canPlayVideo && (autoPlayOnSourceChangeRef.current || isPlayingRef.current);
-    autoPlayOnSourceChangeRef.current = false;
-
-    const isAlreadyPlayingCorrectly =
-      shouldResumePlayback &&
-      !video.paused &&
-      !video.ended &&
-      video.readyState >= 2 &&
-      Math.abs(video.currentTime - initialSourceTime) < 1.5;
-
-    if (isAlreadyPlayingCorrectly) {
-      pendingSeekTimeRef.current = undefined;
-      setCurrentTime(video.currentTime);
-      setIsPlaying(true);
-      return;
-    }
-
-    pendingSeekTimeRef.current = canPlayVideo ? initialSourceTime : undefined;
-    const shouldLoad = video.readyState < 1;
-    if (shouldLoad) {
-      suppressPauseRef.current = true;
-      video.pause();
-      video.load();
-      window.setTimeout(() => {
-        suppressPauseRef.current = false;
-      }, 0);
-    }
-    setCurrentTime(canPlayVideo ? initialSourceTime : 0);
-
-    if (!shouldResumePlayback) {
-      setIsPlaying(false);
-      return;
-    }
-
-    let cancelled = false;
-
-    const attemptPlay = async () => {
-      await seekVideoAndWait(initialSourceTime);
-      if (cancelled) return;
+      const pumpGeneration = sessionGenerationRef.current;
+      framePendingRef.current = true;
       try {
-        await video.play();
-        if (!cancelled) setIsPlaying(true);
-      } catch {
-        if (cancelled) return;
-        try {
-          video.muted = true;
-          await video.play();
-          if (!cancelled) setIsPlaying(true);
-        } catch {
-          if (!cancelled && !hasTimelineClips) setIsPlaying(false);
+        while (queuedRenderRef.current) {
+          if (pumpGeneration !== sessionGenerationRef.current) break;
+          const request = queuedRenderRef.current;
+          queuedRenderRef.current = undefined;
+          const sessionId = sessionIdRef.current;
+          const activeAsset = hasTimelineClipsRef.current
+            ? resolveTimelinePreviewRef.current(request.timelineTime)?.asset
+            : selectedAssetRef.current;
+
+          if (activeAsset?.kind !== "video") {
+            clearCanvas();
+            setPreviewState("idle");
+            setPreviewError(undefined);
+            continue;
+          }
+          if (!activeAsset.absolutePath) {
+            setPreviewState("decode-failed");
+            setPreviewError("素材没有可供 native preview 打开的本地路径。");
+            continue;
+          }
+          if (!sessionId) continue;
+
+          const generation = sessionGenerationRef.current;
+          // Do not cover a valid frame with a spinner while the next frame is
+          // decoding. It makes normal playback look permanently stalled.
+          if (!hasFrameRef.current) setPreviewState("decode-pending");
+          setPreviewError(undefined);
+          try {
+            if (request.seek) {
+              await desktopApi.nativeMedia.seek({ sessionId, time: request.timelineTime });
+            }
+            const frame = await desktopApi.nativeMedia.renderFrame({
+              sessionId,
+              timelineTime: request.timelineTime
+            });
+            if (generation !== sessionGenerationRef.current) continue;
+            drawFrame(frame);
+            hasFrameRef.current = true;
+            setPreviewState("ready");
+          } catch (error) {
+            if (generation !== sessionGenerationRef.current) continue;
+            setPreviewState("decode-failed");
+            setPreviewError(formatNativePreviewError(error));
+          }
+        }
+      } finally {
+        if (pumpGeneration === sessionGenerationRef.current) {
+          framePendingRef.current = false;
         }
       }
-    };
+    },
+    [clearCanvas, drawFrame]
+  );
 
-    void attemptPlay();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeBuffer.sourceKey,
-    activeBuffer.url,
-    activeBufferIndex,
-    canPlayVideo,
-    hasTimelineClips,
-    seekVideoAndWait
-  ]);
+  renderAtRef.current = renderAt;
 
   useEffect(() => {
-    if (!canPlayVideo) {
+    sessionGenerationRef.current += 1;
+    const generation = sessionGenerationRef.current;
+    const previousSessionId = sessionIdRef.current;
+    sessionIdRef.current = undefined;
+    framePendingRef.current = false;
+    queuedRenderRef.current = undefined;
+    hasFrameRef.current = false;
+    setIsPlaying(false);
+    clearCanvas();
+
+    if (previousSessionId) {
+      void desktopApi.nativeMedia.dispose({ targetId: previousSessionId });
+    }
+    if (!nativeTimeline) {
+      setPreviewState("idle");
+      setPreviewError(undefined);
       return;
     }
 
-    if (hasTimelineClips && isPlaying) {
+    let disposed = false;
+    setPreviewState("loading");
+    setPreviewError(undefined);
+    void desktopApi.nativeMedia
+      .createPlaybackSession({ timeline: nativeTimeline })
+      .then(async (session) => {
+        if (disposed || generation !== sessionGenerationRef.current) {
+          await desktopApi.nativeMedia.dispose({ targetId: session.id });
+          return;
+        }
+        sessionIdRef.current = session.id;
+        await renderAtRef.current(playheadRef.current, true);
+      })
+      .catch((error) => {
+        if (disposed || generation !== sessionGenerationRef.current) {
+          return;
+        }
+        setPreviewState("decode-failed");
+        setPreviewError(formatNativePreviewError(error));
+      });
+
+    return () => {
+      disposed = true;
+      queuedRenderRef.current = undefined;
+      hasFrameRef.current = false;
+      if (sessionIdRef.current) {
+        void desktopApi.nativeMedia.dispose({ targetId: sessionIdRef.current });
+        sessionIdRef.current = undefined;
+      }
+    };
+  }, [clearCanvas, nativeTimeline]);
+
+  useEffect(() => {
+    if (isPlaying || !sessionIdRef.current) {
       return;
     }
+    void renderAt(playheadSec, true);
+  }, [isPlaying, playheadSec, renderAt]);
 
-    seekVideo(sourceTime);
+  useEffect(() => {
     if (!isPlaying) {
-      setCurrentTime(sourceTime);
-    }
-  }, [canPlayVideo, hasTimelineClips, isPlaying, seekVideo, sourceTime]);
-
-  useEffect(() => {
-    const standbyVideo = videoRefs.current[standbyBufferIndex];
-    if (!standbyVideo || !standbyBuffer.url) {
       return;
     }
 
-    let cancelled = false;
-    const nextSourceTime = Math.max(0, standbyBuffer.sourceTime);
-    const warmSeek = () => {
-      if (cancelled || standbyVideo.readyState < 1) {
-        return;
-      }
-
-      if (Math.abs(standbyVideo.currentTime - nextSourceTime) > 0.04) {
-        standbyVideo.currentTime = nextSourceTime;
-      }
-    };
-
-    standbyVideo.load();
-    warmSeek();
-    standbyVideo.addEventListener("loadedmetadata", warmSeek);
-
-    return () => {
-      cancelled = true;
-      standbyVideo.removeEventListener("loadedmetadata", warmSeek);
-    };
-  }, [
-    standbyBuffer.sourceKey,
-    standbyBuffer.sourceTime,
-    standbyBuffer.url,
-    standbyBufferIndex
-  ]);
-
-  useEffect(() => {
-    if (!isPlaying || !hasTimelineClips) {
-      return;
-    }
-
-    const playbackEndSec = timelinePlaybackEndSec || timelineDurationSec;
     let frameId = 0;
-
     const tick = () => {
       const now = performance.now();
       const elapsedSec = (now - playbackStartPerformanceRef.current) / 1000;
@@ -381,149 +283,71 @@ export const Preview = () => {
         playbackEndSec,
         playbackStartTimelineRef.current + elapsedSec
       );
-      const nextPreview =
-        resolveTimelinePreview(nextTimelineTime) ??
-        resolveTimelinePreview(Math.min(playbackEndSec, nextTimelineTime + 0.001));
-      const nextSourceKey = nextPreview
-        ? getTimelinePreviewSourceKey(nextPreview)
-        : undefined;
-
-      if (
-        nextPreview &&
-        nextSourceKey &&
-        playbackSourceKeyRef.current &&
-        nextSourceKey !== playbackSourceKeyRef.current
-      ) {
-        const activeVideo = videoRefs.current[activeBufferIndexRef.current];
-        playbackSourceKeyRef.current = nextSourceKey;
-
-        if (activeVideo) {
-          const didPromoteBuffer = promoteStandbyBuffer({
-            activeVideo,
-            nextPreview,
-            setVideoBuffers,
-            setActiveBufferIndex,
-            setCurrentTime,
-            activeBufferIndexRef,
-            autoPlayOnSourceChangeRef,
-            suppressPauseRef,
-            videoBuffersRef,
-            videoRefs
-          });
-
-          if (!didPromoteBuffer) {
-            autoPlayOnSourceChangeRef.current = true;
-          }
-        }
+      if (nextTimelineTime - playbackLastQueuedFrameTimeRef.current >= frameStep * 0.9) {
+        playbackLastQueuedFrameTimeRef.current = nextTimelineTime;
+        void renderAt(nextTimelineTime, false);
       }
 
-      const shouldCommitPlayhead =
-        nextTimelineTime >= playbackEndSec - 0.001 ||
-        now - playbackLastCommitPerformanceRef.current >= 33;
-      if (shouldCommitPlayhead) {
+      if (now - playbackLastCommitPerformanceRef.current >= PREVIEW_CLOCK_COMMIT_INTERVAL_MS) {
         playbackLastCommitPerformanceRef.current = now;
         setPlayhead(nextTimelineTime);
       }
-
       if (nextTimelineTime >= playbackEndSec - 0.001) {
-        pauseAllVideos(videoRefs);
+        const sessionId = sessionIdRef.current;
+        if (sessionId) {
+          void desktopApi.nativeMedia.pause({ sessionId });
+        }
         setIsPlaying(false);
+        setPreviewState("end-of-stream");
         return;
       }
-
       frameId = requestAnimationFrame(tick);
     };
 
     frameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frameId);
-  }, [
-    hasTimelineClips,
-    isPlaying,
-    resolveTimelinePreview,
-    setPlayhead,
-    timelineDurationSec,
-    timelinePlaybackEndSec
-  ]);
+  }, [frameStep, isPlaying, playbackEndSec, renderAt, setPlayhead]);
 
   const handlePlay = async () => {
-    const video = videoRefs.current[activeBufferIndexRef.current];
-    if (!video || !canPlayVideo) {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId || !hasNativeVideoAtPlayhead || !previewAsset?.absolutePath) {
       return;
     }
-
-    const playbackEndSec = timelinePlaybackEndSec || timelineDurationSec;
-    const playbackStartSec =
-      hasTimelineClips && playheadSec >= playbackEndSec - 0.001 ? 0 : playheadSec;
-
-    playbackStartTimelineRef.current = playbackStartSec;
-    playbackStartPerformanceRef.current = performance.now();
-    playbackLastCommitPerformanceRef.current = 0;
-    playbackSourceKeyRef.current = timelinePreview
-      ? getTimelinePreviewSourceKey(timelinePreview)
-      : undefined;
-
-    if (hasTimelineClips && playbackStartSec !== playheadSec) {
-      setPlayhead(playbackStartSec);
-    }
-
-    if (timelinePreview) {
-      await seekVideoAndWait(timelinePreview.sourceTime);
-    }
-
+    const startTime = playheadSec >= playbackEndSec - 0.001 ? 0 : playheadSec;
     try {
-      await video.play();
-    } catch {
-      if (!hasTimelineClips) {
-        setIsPlaying(false);
-        return;
+      await desktopApi.nativeMedia.play({ sessionId });
+      if (startTime !== playheadSec) {
+        setPlayhead(startTime);
       }
+      playbackStartTimelineRef.current = startTime;
+      playbackStartPerformanceRef.current = performance.now();
+      playbackLastCommitPerformanceRef.current = 0;
+      playbackLastQueuedFrameTimeRef.current = startTime;
+      if (!hasFrameRef.current) setPreviewState("decode-pending");
+      setIsPlaying(true);
+      void renderAt(startTime, true);
+    } catch (error) {
+      setPreviewState("decode-failed");
+      setPreviewError(formatNativePreviewError(error));
     }
-    setIsPlaying(true);
   };
 
   const handlePause = () => {
-    const video = videoRefs.current[activeBufferIndexRef.current];
-    if (!video) {
-      return;
+    const sessionId = sessionIdRef.current;
+    if (sessionId) {
+      void desktopApi.nativeMedia.pause({ sessionId });
     }
-
-    pauseAllVideos(videoRefs);
     setIsPlaying(false);
   };
 
-  const handleLoadedMetadata = () => {
-    const pendingSeekTime = pendingSeekTimeRef.current;
-    if (pendingSeekTime === undefined) {
-      return;
-    }
-
-    seekVideo(pendingSeekTime);
-    setCurrentTime(pendingSeekTime);
-  };
-
   const seekBy = (delta: number) => {
-    if (hasTimelineClips) {
-      setPlayhead(Math.max(0, Math.min(timelineDurationSec, playheadSec + delta)));
-      return;
-    }
-
-    const video = videoRefs.current[activeBufferIndexRef.current];
-    if (!video) {
-      return;
-    }
-
-    const nextTime = Math.max(0, Math.min(video.duration || Number.MAX_SAFE_INTEGER, video.currentTime + delta));
-    video.currentTime = nextTime;
-    setCurrentTime(nextTime);
+    const nextTime = Math.max(0, Math.min(playbackEndSec, playheadSec + delta));
+    setPlayhead(nextTime);
+    void renderAt(nextTime, true);
   };
 
-  const frameStep = useMemo(
-    () => 1 / (timelineFps ?? previewAsset?.fps ?? 24),
-    [previewAsset?.fps, timelineFps]
-  );
-  const displayImage = previewAsset?.solidColor
-    ? undefined
-    : previewAsset?.thumbnailUrl ?? previewAsset?.fileUrl ?? previewAsset?.objectUrl;
+  const showNativeCanvas = hasNativeVideoAtPlayhead;
+  const canPlay = Boolean(sessionIdRef.current && hasNativeVideoAtPlayhead && previewAsset?.absolutePath);
 
   return (
     <section className="panel preview-panel" data-panel="preview">
@@ -540,58 +364,23 @@ export const Preview = () => {
       </div>
 
       <div className="viewer">
-        {canPlayVideo ? (
-          videoBuffers.map((buffer, index) => {
-            const bufferIndex = index as VideoBufferIndex;
-            const isActive = bufferIndex === activeBufferIndex;
-
-            return (
-              <video
-                aria-hidden={!isActive}
-                className={isActive ? "viewer-video-buffer is-active" : "viewer-video-buffer"}
-                controls={false}
-                key={bufferIndex}
-                muted={!isActive}
-                onEnded={() => {
-                  if (!hasTimelineClips && bufferIndex === activeBufferIndexRef.current) {
-                    setIsPlaying(false);
-                  }
-                }}
-                onLoadedMetadata={() => {
-                  if (bufferIndex === activeBufferIndexRef.current) {
-                    handleLoadedMetadata();
-                  }
-                }}
-                onPause={() => {
-                  if (
-                    !hasTimelineClips &&
-                    bufferIndex === activeBufferIndexRef.current &&
-                    !suppressPauseRef.current
-                  ) {
-                    setIsPlaying(false);
-                  }
-                }}
-                onPlay={() => {
-                  if (bufferIndex === activeBufferIndexRef.current) {
-                    setIsPlaying(true);
-                  }
-                }}
-                onTimeUpdate={(event) => {
-                  if (bufferIndex === activeBufferIndexRef.current) {
-                    setCurrentTime(event.currentTarget.currentTime);
-                  }
-                }}
-                playsInline
-                poster={buffer.poster}
-                preload="auto"
-                ref={(node) => {
-                  videoRefs.current[bufferIndex] = node;
-                }}
-                src={buffer.url}
-                tabIndex={isActive ? undefined : -1}
-              />
-            );
-          })
+        {showNativeCanvas ? (
+          <>
+            {nativePoster && previewState !== "ready" ? (
+              <img alt="素材缩略图" className="viewer-native-poster" src={nativePoster} />
+            ) : null}
+            <canvas
+              aria-label="原生视频预览"
+              className="viewer-native-canvas"
+              ref={canvasRef}
+              style={{ opacity: previewState === "ready" ? frameOpacity : 0 }}
+            />
+            {previewState !== "ready" ? (
+              <div className={`viewer-native-status is-${previewState}`} role="status">
+                {nativePreviewStatusText(previewState, previewError)}
+              </div>
+            ) : null}
+          </>
         ) : previewAsset?.solidColor ? (
           <div
             className="viewer-solid-color"
@@ -606,7 +395,7 @@ export const Preview = () => {
       </div>
 
       <div className="transport">
-        <time>{formatTimecode(displayTime, timelineFps ?? previewAsset?.fps)}</time>
+        <time>{formatTimecode(playheadSec, timelineFps ?? previewAsset?.fps)}</time>
         <div className="transport-buttons">
           <button className="icon-button" onClick={() => seekBy(-frameStep)} title="上一帧" type="button">
             <SkipBack size={18} />
@@ -619,13 +408,7 @@ export const Preview = () => {
               <Pause size={20} fill="currentColor" />
             </button>
           ) : (
-            <button
-              className="play-button"
-              disabled={!canPlayVideo}
-              onClick={handlePlay}
-              title="播放"
-              type="button"
-            >
+            <button className="play-button" disabled={!canPlay} onClick={handlePlay} title="播放" type="button">
               <Play size={20} fill="currentColor" />
             </button>
           )}
@@ -637,9 +420,7 @@ export const Preview = () => {
           <Camera size={16} />
           <Volume2 size={16} />
           <ZoomIn size={16} />
-          <div className="volume-line">
-            <span />
-          </div>
+          <div className="volume-line"><span /></div>
           <Maximize2 size={16} />
         </div>
       </div>
@@ -647,146 +428,125 @@ export const Preview = () => {
   );
 };
 
-function getTimelinePreviewSourceKey(preview: TimelinePreviewTarget): string {
-  return [
-    preview.asset.id,
-    preview.clip.id,
-    preview.clip.sourceIn,
-    preview.clip.sourceOut
-  ].join(":");
-}
-
-function getVideoBufferRequest(
-  preview: TimelinePreviewTarget | undefined
-): VideoBufferRequest | undefined {
-  if (!preview || preview.asset.kind !== "video") {
-    return undefined;
-  }
-
-  const url = preview.asset.fileUrl ?? preview.asset.objectUrl;
-  if (!url) {
+function createNativePreviewTimeline({
+  assets,
+  clips,
+  selectedAsset,
+  hasTimelineClips,
+  timelineDurationSec,
+  fps,
+  settings
+}: {
+  assets: EditorMediaAsset[];
+  clips: EditorTimelineClip[];
+  selectedAsset: EditorMediaAsset | undefined;
+  hasTimelineClips: boolean;
+  timelineDurationSec: number;
+  fps: number;
+  settings: NativeTimelineProject["settings"] | undefined;
+}): NativeTimelineProject | undefined {
+  const assetPaths = Object.fromEntries(
+    assets
+      .filter((asset) => asset.kind === "video" && Boolean(asset.absolutePath))
+      .map((asset) => [asset.id, asset.absolutePath!])
+  );
+  const videoClips = hasTimelineClips
+    ? clips.filter((clip) => clip.trackId === "video-1")
+    : selectedAsset?.kind === "video"
+      ? [
+          {
+            id: `native-preview-${selectedAsset.id}`,
+            assetId: selectedAsset.id,
+            trackId: "video-1" as const,
+            timelineStart: 0,
+            durationSec: selectedAsset.durationSec,
+            sourceIn: 0,
+            sourceOut: selectedAsset.durationSec
+          }
+        ]
+      : [];
+  if (videoClips.length === 0) {
     return undefined;
   }
 
   return {
-    sourceKey: getTimelinePreviewSourceKey(preview),
-    url,
-    poster: preview.asset.thumbnailUrl,
-    sourceTime: preview.sourceTime
+    assets: [],
+    assetPaths,
+    settings:
+      settings ?? {
+        width: 1920,
+        height: 1080,
+        fps,
+        audioSampleRate: 48000,
+        colorSpace: "rec709",
+        defaultDurationSeconds: 5,
+        previewResolution: "half"
+      },
+    timeline: {
+      id: "native-preview",
+      fps,
+      duration: timelineDurationSec,
+      playhead: 0,
+      tracks: [
+        {
+          id: "video-1",
+          kind: "video",
+          name: "Preview",
+          order: 0,
+          locked: false,
+          muted: false,
+          visible: true,
+          clips: videoClips.map((clip) => ({
+            id: clip.id,
+            assetId: clip.assetId,
+            trackId: "video-1",
+            name: "Preview clip",
+            sourceIn: clip.sourceIn,
+            sourceOut: clip.sourceOut,
+            timelineStart: clip.timelineStart,
+            timelineEnd: clip.timelineStart + clip.durationSec,
+            speed: 1,
+            opacity: 1
+          }))
+        }
+      ]
+    }
   };
 }
 
-function getStandbyBufferIndex(activeBufferIndex: VideoBufferIndex): VideoBufferIndex {
-  return activeBufferIndex === 0 ? 1 : 0;
-}
-
-function replaceVideoBuffer(
-  buffers: [VideoBufferState, VideoBufferState],
-  index: VideoBufferIndex,
-  buffer: VideoBufferState
-): [VideoBufferState, VideoBufferState] {
-  return index === 0 ? [buffer, buffers[1]] : [buffers[0], buffer];
-}
-
-function pauseAllVideos(
-  videoRefs: MutableRefObject<Array<HTMLVideoElement | null>>
-): void {
-  videoRefs.current.forEach((video) => video?.pause());
-}
-
-function promoteStandbyBuffer({
-  activeVideo,
-  nextPreview,
-  setVideoBuffers,
-  setActiveBufferIndex,
-  setCurrentTime,
-  activeBufferIndexRef,
-  autoPlayOnSourceChangeRef,
-  suppressPauseRef,
-  videoBuffersRef,
-  videoRefs
-}: {
-  activeVideo: HTMLVideoElement;
-  nextPreview: TimelinePreviewTarget;
-  setVideoBuffers(
-    updater: (buffers: [VideoBufferState, VideoBufferState]) => [VideoBufferState, VideoBufferState]
-  ): void;
-  setActiveBufferIndex(index: VideoBufferIndex): void;
-  setCurrentTime(time: number): void;
-  activeBufferIndexRef: MutableRefObject<VideoBufferIndex>;
-  autoPlayOnSourceChangeRef: MutableRefObject<boolean>;
-  suppressPauseRef: MutableRefObject<boolean>;
-  videoBuffersRef: MutableRefObject<[VideoBufferState, VideoBufferState]>;
-  videoRefs: MutableRefObject<Array<HTMLVideoElement | null>>;
-}): boolean {
-  const activeIndex = activeBufferIndexRef.current;
-  const standbyIndex = getStandbyBufferIndex(activeIndex);
-  const standbyVideo = videoRefs.current[standbyIndex];
-  const standbyBuffer = videoBuffersRef.current[standbyIndex];
-  const nextRequest = getVideoBufferRequest(nextPreview);
-
-  if (!nextRequest) {
-    return false;
+function frameToImageData(frame: NativeVideoFrame): ImageData {
+  if (frame.data.kind !== "inline") {
+    throw new Error("当前 renderer 尚不能映射 shared-memory 帧。");
+  }
+  if (frame.format !== "rgba" && frame.format !== "bgra") {
+    throw new Error(`Canvas MVP 只支持 RGBA/BGRA，收到 ${frame.format}。`);
   }
 
-  const hasPreparedStandby =
-    Boolean(standbyVideo) &&
-    standbyBuffer.sourceKey === nextRequest.sourceKey &&
-    standbyBuffer.url === nextRequest.url;
-
-  activeVideo.muted = true;
-  suppressPauseRef.current = true;
-  window.setTimeout(() => {
-    suppressPauseRef.current = false;
-  }, 250);
-
-  autoPlayOnSourceChangeRef.current = true;
-  activeBufferIndexRef.current = standbyIndex;
-
-  setVideoBuffers((current) =>
-    replaceVideoBuffer(current, standbyIndex, {
-      ...current[standbyIndex],
-      ...nextRequest
-    })
-  );
-  setCurrentTime(nextRequest.sourceTime);
-  setActiveBufferIndex(standbyIndex);
-
-  if (standbyVideo && hasPreparedStandby && standbyVideo.readyState >= 1) {
-    standbyVideo.muted = false;
-    if (Math.abs(standbyVideo.currentTime - nextRequest.sourceTime) > 0.06) {
-      standbyVideo.currentTime = nextRequest.sourceTime;
+  const source = Uint8ClampedArray.from(atob(frame.data.data), (byte) => byte.charCodeAt(0));
+  const rgba = new Uint8ClampedArray(frame.width * frame.height * 4);
+  for (let row = 0; row < frame.height; row += 1) {
+    const sourceOffset = row * frame.stride;
+    const destinationOffset = row * frame.width * 4;
+    rgba.set(source.subarray(sourceOffset, sourceOffset + frame.width * 4), destinationOffset);
+  }
+  if (frame.format === "bgra") {
+    for (let index = 0; index < rgba.length; index += 4) {
+      const red = rgba[index];
+      rgba[index] = rgba[index + 2];
+      rgba[index + 2] = red;
     }
-
-    void standbyVideo.play().catch(() => {
-      autoPlayOnSourceChangeRef.current = true;
-    });
   }
-
-  window.setTimeout(() => activeVideo.pause(), 80);
-
-  return true;
+  return new ImageData(rgba, frame.width, frame.height);
 }
 
-function waitForMediaEvent(
-  video: HTMLVideoElement,
-  eventName: keyof HTMLMediaElementEventMap,
-  timeoutMs: number
-): Promise<void> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) {
-        return;
-      }
+function nativePreviewStatusText(state: NativePreviewState, error: string | undefined): string {
+  if (state === "loading") return "正在启动 native preview…";
+  if (state === "decode-pending") return "正在解码画面…";
+  if (state === "end-of-stream") return "播放结束";
+  if (state === "decode-failed") return error ?? "原生解码失败";
+  return "";
+}
 
-      settled = true;
-      window.clearTimeout(timeoutId);
-      video.removeEventListener(eventName, finish);
-      resolve();
-    };
-    const timeoutId = window.setTimeout(finish, timeoutMs);
-
-    video.addEventListener(eventName, finish, { once: true });
-  });
+function formatNativePreviewError(error: unknown): string {
+  return error instanceof Error ? error.message : "原生解码失败";
 }

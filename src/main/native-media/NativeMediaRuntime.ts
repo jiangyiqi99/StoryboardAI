@@ -257,8 +257,14 @@ async function resolveSidecarPath(): Promise<string> {
   const candidates = configuredPath
     ? [configuredPath]
     : [
-        join(app.isPackaged ? process.resourcesPath : process.cwd(), "native", "bin", sidecarName()),
-        join(dirname(process.execPath), "native", "bin", sidecarName())
+        join(
+          app.isPackaged ? process.resourcesPath : process.cwd(),
+          "native",
+          "libav",
+          "bin",
+          sidecarName()
+        ),
+        join(dirname(process.execPath), "native", "libav", "bin", sidecarName())
       ];
 
   for (const candidate of candidates) {

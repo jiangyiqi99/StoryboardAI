@@ -7,9 +7,9 @@ import (
 	"os"
 )
 
-// The control plane deliberately uses one JSON object per line. Large video
-// and audio payloads are returned as shared-memory descriptors, never copied
-// through stdin/stdout in a normal playback path.
+// The control plane deliberately uses one JSON object per line. The initial
+// Canvas preview transport returns inline frame data; a shared-memory data
+// plane will replace it for high-rate production playback.
 type request struct {
 	ID     uint64         `json:"id"`
 	Method string         `json:"method"`

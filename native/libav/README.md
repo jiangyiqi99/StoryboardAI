@@ -14,7 +14,7 @@ go build -tags libav -o bin/libav-sidecar ./cmd/libav-sidecar
 ```
 
 For Electron development, set `LIBAV_SIDECAR_PATH` to the generated binary or
-place it at `native/bin/libav-sidecar` (`.exe` on Windows). Production
+leave it at `native/libav/bin/libav-sidecar` (`.exe` on Windows). Production
 packaging must copy the same binary and its dynamically linked libraries to
 the app resources directory.
 
@@ -26,6 +26,10 @@ the app resources directory.
   and a decode loop. Conversion uses `sws_scale` to RGBA. The initial native
   decoder returns the documented `inline` transport for functional parity;
   platform shared-memory allocation/mapping is the next data-plane step.
+- `renderFrame` keeps the decoder cursor hot while a playback session advances
+  normally, and only seeks/flushes for an explicit seek or a large time jump.
+  It respects the project's quarter/half/full preview resolution before the
+  inline transfer.
 - `probe` replaces the current ffprobe-shaped metadata only after its output
   has parity tests. Current `media:*` import/preview/export behavior remains
   untouched.
