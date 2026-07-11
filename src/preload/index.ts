@@ -44,6 +44,20 @@ export const desktopApi: AivDesktopApi = {
       invoke(IPC_CHANNELS.MEDIA_RENDER_TIMELINE, request),
     getPathForFile: (file) => webUtils.getPathForFile(file)
   },
+  nativeMedia: {
+    openAsset: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_OPEN_ASSET, request),
+    probe: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_PROBE, request),
+    decodeFrame: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_DECODE_FRAME, request),
+    createPlaybackSession: (request) =>
+      invoke(IPC_CHANNELS.NATIVE_MEDIA_CREATE_PLAYBACK_SESSION, request),
+    seek: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_SEEK, request),
+    play: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_PLAY, request),
+    pause: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_PAUSE, request),
+    renderFrame: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_RENDER_FRAME, request),
+    encodeTimeline: (request) =>
+      invoke(IPC_CHANNELS.NATIVE_MEDIA_ENCODE_TIMELINE, request),
+    dispose: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_DISPOSE, request)
+  },
   ai: {
     generateVideo: (request) => invoke(IPC_CHANNELS.AI_GENERATE_VIDEO, request),
     generateStoryboard: (request) =>

@@ -8,6 +8,8 @@ import {
 } from "./mediaResourceProtocol";
 import { createAppServices } from "./services/appServices";
 
+const services = createAppServices();
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 registerMediaResourceProtocolScheme();
@@ -38,7 +40,7 @@ const createMainWindow = (): BrowserWindow => {
 
 app.whenReady().then(() => {
   registerMediaResourceProtocol();
-  registerIpcHandlers(createAppServices());
+  registerIpcHandlers(services);
   createMainWindow();
 
   app.on("activate", () => {
@@ -52,4 +54,8 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  void services.nativeMediaRuntime.shutdown();
 });

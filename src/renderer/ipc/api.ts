@@ -34,6 +34,18 @@ const createUnavailableDesktopApi = (): AivDesktopApi => {
         throw new Error(DESKTOP_FILE_ACCESS_ERROR);
       }
     },
+    nativeMedia: {
+      openAsset: rejectDesktopUnavailable,
+      probe: rejectDesktopUnavailable,
+      decodeFrame: rejectDesktopUnavailable,
+      createPlaybackSession: rejectDesktopUnavailable,
+      seek: rejectDesktopUnavailable,
+      play: rejectDesktopUnavailable,
+      pause: rejectDesktopUnavailable,
+      renderFrame: rejectDesktopUnavailable,
+      encodeTimeline: rejectDesktopUnavailable,
+      dispose: rejectDesktopUnavailable
+    },
     ai: {
       generateVideo: rejectDesktopUnavailable,
       generateStoryboard: rejectDesktopUnavailable,

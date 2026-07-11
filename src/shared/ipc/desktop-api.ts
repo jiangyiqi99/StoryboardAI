@@ -14,6 +14,15 @@ import type {
   MediaPreviewFrame,
   MediaRenderTimelineRequest,
   MediaSelectFilesRequest,
+  NativeMediaCreatePlaybackSessionRequest,
+  NativeMediaDecodeFrameRequest,
+  NativeMediaDisposeRequest,
+  NativeMediaEncodeTimelineRequest,
+  NativeMediaOpenAssetRequest,
+  NativeMediaProbeRequest,
+  NativeMediaRenderFrameRequest,
+  NativeMediaSeekRequest,
+  NativeMediaSessionRequest,
   ProjectCreateRequest,
   ProjectOpenRequest,
   ProjectSaveRequest,
@@ -35,6 +44,13 @@ import type {
 } from "../types/app-config";
 import type { AiGenerationJob } from "../types/ai";
 import type { AssetMetadata } from "../types/asset";
+import type {
+  NativeEncodeResult,
+  NativeMediaAsset,
+  NativeMediaProbe,
+  NativePlaybackSession,
+  NativeVideoFrame
+} from "../types/native-media";
 
 export interface AivDesktopApi {
   config: {
@@ -73,6 +89,24 @@ export interface AivDesktopApi {
     ): Promise<MediaExportTimelineClipsResponse>;
     renderTimeline(request: MediaRenderTimelineRequest): Promise<string>;
     getPathForFile(file: File): string;
+  };
+  /**
+   * Experimental sidecar-backed libav API. It is intentionally separate from
+   * `media` until native playback/export is promoted from the MVP path.
+   */
+  nativeMedia: {
+    openAsset(request: NativeMediaOpenAssetRequest): Promise<NativeMediaAsset>;
+    probe(request: NativeMediaProbeRequest): Promise<NativeMediaProbe>;
+    decodeFrame(request: NativeMediaDecodeFrameRequest): Promise<NativeVideoFrame>;
+    createPlaybackSession(
+      request: NativeMediaCreatePlaybackSessionRequest
+    ): Promise<NativePlaybackSession>;
+    seek(request: NativeMediaSeekRequest): Promise<NativePlaybackSession>;
+    play(request: NativeMediaSessionRequest): Promise<NativePlaybackSession>;
+    pause(request: NativeMediaSessionRequest): Promise<NativePlaybackSession>;
+    renderFrame(request: NativeMediaRenderFrameRequest): Promise<NativeVideoFrame>;
+    encodeTimeline(request: NativeMediaEncodeTimelineRequest): Promise<NativeEncodeResult>;
+    dispose(request: NativeMediaDisposeRequest): Promise<void>;
   };
   ai: {
     generateVideo(request: AiGenerateVideoRequest): Promise<GenerateVideoResponse>;

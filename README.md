@@ -8,6 +8,7 @@ AI-native 本地非线性视频剪辑软件架构骨架。当前阶段只搭建 
 - 本地项目优先：以 `.aivproj/` 文件夹和 `project.json` 作为项目状态中心。
 - Timeline 优先：Track、Clip、Asset、Selection、Edit History 是核心模型。
 - 媒体处理本地化：Preview、Frame、Render 三个引擎分离，第一阶段使用占位/mock 与 FFmpeg/FFprobe 调用槽位。
+- Native Media Runtime：新增 Go/libav Sidecar 契约，作为下一阶段 native 解码、预览与导出的并行通道；尚未替换既有 Preview 或 FFmpeg 路径。
 - AI-native：分镜生成视频和选区替换是一级工作流，不是附加插件。
 - 非破坏性编辑：Timeline clip 只引用素材，不改写原始视频文件。
 
@@ -164,6 +165,31 @@ MyFilm.aivproj/
 - Render Engine：`trim`、`normalize`、`concat`、`renderSelection`、`renderTimeline`、`renderReplacementRange`、`exportTimeline`。第一阶段只保留接口和调用槽位。
 
 Preview 不等于 Render：预览可以用代理、低分辨率或近似播放；最终导出走 Render Engine，按 Timeline 数据和项目设置生成稳定输出。
+
+### Native Media Runtime（实验性）
+
+位置：`src/main/native-media`、`src/shared/types/native-media.ts`、`native/libav`。
+
+现有 `media:*` IPC、`MockPreviewEngine`、`FfmpegFrameEngine` 和
+`FfmpegRenderEngine` 没有改动。新通道以 `window.aiv.nativeMedia` 暴露
+`openAsset`、`probe`、`decodeFrame`、播放 session 控制、`renderFrame` 和
+`encodeTimeline`。Main Process 懒启动 Go Sidecar，控制消息用 stdio JSON-RPC；
+大帧/音频的接口定义为 shared-memory lease，避免把视频帧经 JSON 复制；当前
+native decoder 先使用相同契约的 inline 数据来验证 libav 解码，尚未启用
+platform shared-memory allocator。
+
+帧约定支持 `rgba`、`bgra`、`yuv420p`，包含 width/height/stride、各 plane、
+PTS/timebase、duration、色彩空间、alpha/opacity。音频约定支持 `f32le`、
+`s16le`，包含采样率、声道数、sample frames、PTS/timebase 和同一 transport。
+
+构建 native binary 需要 Go 和系统 libav 开发库：
+
+```bash
+npm run native:libav
+```
+
+详见 [native/libav/README.md](native/libav/README.md)。在二进制尚未构建时调用
+`nativeMedia` 会报明确的运行时不可用错误，应用原有媒体能力不受影响。
 
 ### 5. AI Orchestrator
 

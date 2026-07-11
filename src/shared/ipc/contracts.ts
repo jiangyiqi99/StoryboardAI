@@ -16,6 +16,14 @@ import type {
 } from "../types/project";
 import type { TimelineRange, TrackId } from "../types/timeline";
 import type { StoryScriptDocumentFormat } from "../storyScriptDocuments";
+import type {
+  NativeEncodeResult,
+  NativeMediaAsset,
+  NativeMediaProbe,
+  NativePlaybackSession,
+  NativeTimelineProject,
+  NativeVideoFrame
+} from "../types/native-media";
 
 export interface ProjectCreateRequest {
   name: string;
@@ -139,6 +147,44 @@ export interface MediaRenderTimelineRequest {
   project: Project;
   outputPath: string;
   range?: TimelineRange;
+}
+
+export interface NativeMediaOpenAssetRequest {
+  path: string;
+}
+
+export interface NativeMediaProbeRequest {
+  path: string;
+}
+
+export interface NativeMediaDecodeFrameRequest {
+  assetId: string;
+  time: number;
+}
+
+export interface NativeMediaCreatePlaybackSessionRequest {
+  timeline: NativeTimelineProject;
+}
+
+export interface NativeMediaSessionRequest {
+  sessionId: string;
+}
+
+export interface NativeMediaSeekRequest extends NativeMediaSessionRequest {
+  time: number;
+}
+
+export interface NativeMediaRenderFrameRequest extends NativeMediaSessionRequest {
+  timelineTime: number;
+}
+
+export interface NativeMediaEncodeTimelineRequest {
+  project: NativeTimelineProject;
+  outputPath: string;
+}
+
+export interface NativeMediaDisposeRequest {
+  targetId: string;
 }
 
 export interface MediaExportTimelineClipInput {
@@ -299,6 +345,46 @@ export interface IpcInvokeMap {
   "media:renderTimeline": {
     request: MediaRenderTimelineRequest;
     response: string;
+  };
+  "nativeMedia:openAsset": {
+    request: NativeMediaOpenAssetRequest;
+    response: NativeMediaAsset;
+  };
+  "nativeMedia:probe": {
+    request: NativeMediaProbeRequest;
+    response: NativeMediaProbe;
+  };
+  "nativeMedia:decodeFrame": {
+    request: NativeMediaDecodeFrameRequest;
+    response: NativeVideoFrame;
+  };
+  "nativeMedia:createPlaybackSession": {
+    request: NativeMediaCreatePlaybackSessionRequest;
+    response: NativePlaybackSession;
+  };
+  "nativeMedia:seek": {
+    request: NativeMediaSeekRequest;
+    response: NativePlaybackSession;
+  };
+  "nativeMedia:play": {
+    request: NativeMediaSessionRequest;
+    response: NativePlaybackSession;
+  };
+  "nativeMedia:pause": {
+    request: NativeMediaSessionRequest;
+    response: NativePlaybackSession;
+  };
+  "nativeMedia:renderFrame": {
+    request: NativeMediaRenderFrameRequest;
+    response: NativeVideoFrame;
+  };
+  "nativeMedia:encodeTimeline": {
+    request: NativeMediaEncodeTimelineRequest;
+    response: NativeEncodeResult;
+  };
+  "nativeMedia:dispose": {
+    request: NativeMediaDisposeRequest;
+    response: void;
   };
   "appConfig:get": {
     request: AppConfigGetRequest;

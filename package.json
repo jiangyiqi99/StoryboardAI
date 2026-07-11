@@ -14,7 +14,8 @@
     "dist:win": "npm run build && electron-builder --win",
     "dist:linux": "npm run build && electron-builder --linux",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "native:libav": "node native/libav/scripts/build.mjs"
   },
   "build": {
     "appId": "ai.storyboard.editor",
