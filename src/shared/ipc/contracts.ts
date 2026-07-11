@@ -18,6 +18,7 @@ import type { TimelineRange, TrackId } from "../types/timeline";
 import type { StoryScriptDocumentFormat } from "../storyScriptDocuments";
 import type {
   NativeEncodeResult,
+  NativeAudioBuffer,
   NativeMediaAsset,
   NativeMediaProbe,
   NativePlaybackSession,
@@ -176,6 +177,12 @@ export interface NativeMediaSeekRequest extends NativeMediaSessionRequest {
 
 export interface NativeMediaRenderFrameRequest extends NativeMediaSessionRequest {
   timelineTime: number;
+}
+
+export interface NativeMediaRenderAudioRequest extends NativeMediaSessionRequest {
+  timelineTime: number;
+  /** Timeline seconds to decode and mix; preview requests short buffered chunks. */
+  duration: number;
 }
 
 export interface NativeMediaEncodeTimelineRequest {
@@ -377,6 +384,10 @@ export interface IpcInvokeMap {
   "nativeMedia:renderFrame": {
     request: NativeMediaRenderFrameRequest;
     response: NativeVideoFrame;
+  };
+  "nativeMedia:renderAudio": {
+    request: NativeMediaRenderAudioRequest;
+    response: NativeAudioBuffer;
   };
   "nativeMedia:encodeTimeline": {
     request: NativeMediaEncodeTimelineRequest;

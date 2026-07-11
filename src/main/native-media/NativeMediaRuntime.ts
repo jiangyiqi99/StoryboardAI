@@ -3,10 +3,10 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
 import { app } from "electron";
-import { loadSharedMemoryBridge } from "./sharedMemoryBridge";
 import type { NativeMediaRuntime } from "@shared/native-media-runtime";
 import type {
   NativeEncodeResult,
+  NativeAudioBuffer,
   NativeMediaAsset,
   NativeMediaLogEvent,
   NativeMediaProbe,
@@ -24,6 +24,7 @@ type SidecarMethod =
   | "play"
   | "pause"
   | "renderFrame"
+  | "renderAudio"
   | "encodeTimeline"
   | "dispose"
   | "shutdown";
@@ -55,8 +56,6 @@ interface PendingRequest {
   reject: (reason: Error) => void;
 }
 
-type FrameTransport = "inline" | "shared-memory";
-
 export class NativeMediaRuntimeUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -66,8 +65,9 @@ export class NativeMediaRuntimeUnavailableError extends Error {
 
 /**
  * Lifecycle owner for the Go sidecar. Control messages use line-delimited JSON
- * over stdio. Video/audio payloads deliberately never flow through this
- * channel in normal playback: the protocol carries a shared-memory descriptor.
+ * over stdio. Frames are uploaded to WebGL in the renderer; preview audio is
+ * sent as short buffered PCM batches so Web Audio can schedule it independently
+ * from the video decoder.
  */
 export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
   private process?: ChildProcessWithoutNullStreams;
@@ -76,7 +76,6 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
   private stdoutBuffer = "";
   private readonly pending = new Map<number, PendingRequest>();
   private readonly logListeners = new Set<(event: NativeMediaLogEvent) => void>();
-  private readonly sharedMemoryBridge = loadSharedMemoryBridge();
 
   onLog(listener: (event: NativeMediaLogEvent) => void): () => void {
     this.logListeners.add(listener);
@@ -91,18 +90,14 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
     return this.invoke("probe", { path });
   }
 
-  async decodeFrame(assetId: string, time: number): Promise<NativeVideoFrame> {
-    return this.invoke("decodeFrame", {
-      assetId,
-      time,
-      frameTransport: this.frameTransport
-    });
+  decodeFrame(assetId: string, time: number): Promise<NativeVideoFrame> {
+    return this.invoke("decodeFrame", { assetId, time });
   }
 
   createPlaybackSession(
     timeline: NativeTimelineProject
   ): Promise<NativePlaybackSession> {
-    return this.invoke("createPlaybackSession", { timeline, frameTransport: this.frameTransport });
+    return this.invoke("createPlaybackSession", { timeline });
   }
 
   seek(sessionId: string, time: number): Promise<NativePlaybackSession> {
@@ -117,11 +112,19 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
     return this.invoke("pause", { sessionId });
   }
 
-  async renderFrame(sessionId: string, timelineTime: number): Promise<NativeVideoFrame> {
+  renderFrame(sessionId: string, timelineTime: number): Promise<NativeVideoFrame> {
     return this.invoke("renderFrame", {
       sessionId,
       timelineTime
     });
+  }
+
+  renderAudio(
+    sessionId: string,
+    timelineTime: number,
+    duration: number
+  ): Promise<NativeAudioBuffer> {
+    return this.invoke("renderAudio", { sessionId, timelineTime, duration });
   }
 
   encodeTimeline(
@@ -172,10 +175,6 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
         reject(error);
       });
     });
-  }
-
-  private get frameTransport(): FrameTransport {
-    return this.sharedMemoryBridge ? "shared-memory" : "inline";
   }
 
   private ensureStarted(): Promise<void> {

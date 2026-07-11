@@ -1,5 +1,6 @@
 import type {
   NativeEncodeResult,
+  NativeAudioBuffer,
   NativeMediaAsset,
   NativeMediaProbe,
   NativePlaybackSession,
@@ -20,11 +21,16 @@ export interface NativeMediaRuntime {
   play(sessionId: string): Promise<NativePlaybackSession>;
   pause(sessionId: string): Promise<NativePlaybackSession>;
   renderFrame(sessionId: string, timelineTime: number): Promise<NativeVideoFrame>;
+  renderAudio(
+    sessionId: string,
+    timelineTime: number,
+    duration: number
+  ): Promise<NativeAudioBuffer>;
   encodeTimeline(
     project: NativeTimelineProject,
     outputPath: string
   ): Promise<NativeEncodeResult>;
-  /** Releases an asset, playback session, or shared-memory frame lease. */
+  /** Releases an opened asset or playback session. */
   dispose(targetId: string): Promise<void>;
   shutdown(): Promise<void>;
 }

@@ -10,7 +10,11 @@ import {
   ZoomIn
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { NativeTimelineProject, NativeVideoFrame } from "@shared/types/native-media";
+import type {
+  NativeAudioBuffer,
+  NativeTimelineProject,
+  NativeVideoFrame
+} from "@shared/types/native-media";
 import type { EditorMediaAsset, EditorTimelineClip } from "../../app/editorTypes";
 import { useEditor } from "../../app/EditorContext";
 import { previewClock } from "../../app/previewClock";
@@ -28,7 +32,8 @@ type NativePreviewState =
 
 const FRAME_CACHE_CAPACITY = 3;
 const PREFETCH_LEAD_FRAMES = 1;
-const NATIVE_PREVIEW_CANVAS_ID = "native-preview-canvas";
+const AUDIO_CHUNK_DURATION_SEC = 0.5;
+const AUDIO_BUFFER_LEAD_SEC = 1.1;
 
 interface QueuedRenderRequest {
   timelineTime: number;
@@ -71,6 +76,16 @@ export const Preview = () => {
   const playbackLastFrameKeyRef = useRef(-1);
   const skipNextPausedRenderRef = useRef(false);
   const frameOpacityRef = useRef(1);
+  const audioContextRef = useRef<AudioContext>();
+  const audioSourcesRef = useRef(new Set<AudioBufferSourceNode>());
+  const audioGenerationRef = useRef(0);
+  const audioRequestPendingRef = useRef(false);
+  const audioActiveRef = useRef(false);
+  const audioTimerRef = useRef<number>();
+  const audioAnchorTimelineRef = useRef(0);
+  const audioAnchorContextRef = useRef(0);
+  const audioNextTimelineRef = useRef(0);
+  const scheduleAudioRef = useRef<() => void>(() => undefined);
   const renderAtRef = useRef<(
     time: number,
     seek: boolean,
@@ -159,11 +174,110 @@ export const Preview = () => {
     hasFrameRef.current = false;
   }, []);
 
-  const releaseFrameLease = useCallback((frame: NativeVideoFrame | undefined) => {
-    if (frame?.data.kind === "shared-memory") {
-      void desktopApi.nativeMedia.dispose({ targetId: frame.data.leaseId });
+  const stopPreviewAudio = useCallback(() => {
+    audioActiveRef.current = false;
+    audioGenerationRef.current += 1;
+    audioRequestPendingRef.current = false;
+    if (audioTimerRef.current !== undefined) {
+      window.clearTimeout(audioTimerRef.current);
+      audioTimerRef.current = undefined;
     }
+    for (const source of audioSourcesRef.current) {
+      try {
+        source.stop();
+      } catch {
+        // A source may have reached its natural end between the loop and stop.
+      }
+    }
+    audioSourcesRef.current.clear();
   }, []);
+
+  const schedulePreviewAudio = useCallback(() => {
+    if (audioRequestPendingRef.current || !audioActiveRef.current) return;
+    const sessionId = sessionIdRef.current;
+    const context = audioContextRef.current;
+    const timelineTime = audioNextTimelineRef.current;
+    if (!sessionId || !context || timelineTime >= playbackEndSec - 0.001) return;
+
+    const generation = audioGenerationRef.current;
+    const duration = Math.min(AUDIO_CHUNK_DURATION_SEC, playbackEndSec - timelineTime);
+    audioRequestPendingRef.current = true;
+    // Reserve the window before the async request so only one chunk can be
+    // in flight and calls cannot build an audio IPC backlog.
+    audioNextTimelineRef.current += duration;
+    void desktopApi.nativeMedia
+      .renderAudio({ sessionId, timelineTime, duration })
+      .then((nativeBuffer) => {
+        if (!audioActiveRef.current || generation !== audioGenerationRef.current) return;
+        const audioBuffer = nativeAudioToWebAudioBuffer(context, nativeBuffer);
+        const source = context.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(context.destination);
+        const bufferTimelineTime = nativeBuffer.pts * nativeBuffer.timebase.numerator / nativeBuffer.timebase.denominator;
+        const expectedWhen =
+          audioAnchorContextRef.current + (bufferTimelineTime - audioAnchorTimelineRef.current);
+        const lateBy = Math.max(0, context.currentTime - expectedWhen);
+        if (lateBy < audioBuffer.duration) {
+          audioSourcesRef.current.add(source);
+          source.addEventListener("ended", () => audioSourcesRef.current.delete(source), { once: true });
+          source.start(Math.max(expectedWhen, context.currentTime + 0.005), lateBy);
+        }
+      })
+      .catch(() => {
+        // Audio is an enhancement to preview; a bad stream must not interrupt
+        // the independently decoded video image.
+      })
+      .finally(() => {
+        audioRequestPendingRef.current = false;
+        if (!audioActiveRef.current || generation !== audioGenerationRef.current) return;
+        const currentTimeline =
+          audioAnchorTimelineRef.current +
+          Math.max(0, context.currentTime - audioAnchorContextRef.current);
+        const lead = audioNextTimelineRef.current - currentTimeline;
+        if (lead < AUDIO_BUFFER_LEAD_SEC) {
+          scheduleAudioRef.current();
+          return;
+        }
+        audioTimerRef.current = window.setTimeout(
+          () => scheduleAudioRef.current(),
+          Math.max(20, (lead - AUDIO_BUFFER_LEAD_SEC) * 1000)
+        );
+      });
+  }, [playbackEndSec]);
+
+  scheduleAudioRef.current = schedulePreviewAudio;
+
+  const startPreviewAudio = useCallback(
+    async (timelineTime: number) => {
+      const sessionId = sessionIdRef.current;
+      if (!sessionId) return;
+      stopPreviewAudio();
+      const generation = audioGenerationRef.current;
+      const context = audioContextRef.current ?? new AudioContext();
+      audioContextRef.current = context;
+      try {
+        await context.resume();
+      } catch {
+        return;
+      }
+      if (generation !== audioGenerationRef.current || sessionId !== sessionIdRef.current) return;
+      // `AudioContext.resume()` may take a noticeable fraction of a frame on
+      // the first user gesture. Anchor at the current preview-clock position,
+      // not at the earlier button-click time, so sound never starts late.
+      const elapsedSincePlaybackStart =
+        (performance.now() - playbackStartPerformanceRef.current) / 1000;
+      const currentTimelineTime = Math.min(
+        playbackEndSec,
+        Math.max(timelineTime, playbackStartTimelineRef.current + elapsedSincePlaybackStart)
+      );
+      audioAnchorTimelineRef.current = currentTimelineTime;
+      audioAnchorContextRef.current = context.currentTime + 0.04;
+      audioNextTimelineRef.current = currentTimelineTime;
+      audioActiveRef.current = true;
+      scheduleAudioRef.current();
+    },
+    [playbackEndSec, stopPreviewAudio]
+  );
 
   const drawFrame = useCallback((frame: NativeVideoFrame) => {
     const canvas = canvasRef.current;
@@ -177,18 +291,6 @@ export const Preview = () => {
       canvas2dContextRef.current = null;
       canvasImageDataRef.current = undefined;
       webglRendererRef.current?.resize(frame.width, frame.height);
-    }
-
-    if (frame.data.kind === "shared-memory") {
-      void desktopApi.nativeMedia
-        .presentFrame({ canvasId: NATIVE_PREVIEW_CANVAS_ID, frame })
-        .catch((error) => {
-          setPreviewState("decode-failed");
-          setPreviewError(formatNativePreviewError(error));
-        });
-      frameOpacityRef.current = frame.opacity;
-      canvas.style.opacity = String(frame.opacity);
-      return;
     }
 
     const webgl = webglRendererRef.current ?? createPreviewWebglRenderer(canvas);
@@ -305,19 +407,13 @@ export const Preview = () => {
               timelineTime: request.timelineTime
             });
             pendingFrameKeysRef.current.delete(request.frameKey);
-            if (generation !== sessionGenerationRef.current) {
-              releaseFrameLease(frame);
-              continue;
-            }
+            if (generation !== sessionGenerationRef.current) continue;
             const replacedFrame = frameCacheRef.current.get(request.frameKey);
-            if (replacedFrame && replacedFrame !== frame) releaseFrameLease(replacedFrame);
             frameCacheRef.current.set(request.frameKey, frame);
             while (frameCacheRef.current.size > FRAME_CACHE_CAPACITY) {
               const oldestKey = frameCacheRef.current.keys().next().value;
               if (oldestKey === undefined) break;
-              const evictedFrame = frameCacheRef.current.get(oldestKey);
               frameCacheRef.current.delete(oldestKey);
-              releaseFrameLease(evictedFrame);
             }
             if (request.display || request.frameKey <= activeFrameKeyRef.current) {
               displayCachedFrame(request.frameKey);
@@ -360,8 +456,7 @@ export const Preview = () => {
       frameKeyForTime,
       frameStep,
       frameTimeForKey,
-      playbackEndSec,
-      releaseFrameLease
+      playbackEndSec
     ]
   );
 
@@ -375,10 +470,10 @@ export const Preview = () => {
     framePendingRef.current = false;
     queuedRenderRef.current = undefined;
     pendingFrameKeysRef.current.clear();
-    frameCacheRef.current.forEach(releaseFrameLease);
     frameCacheRef.current.clear();
     activeFrameKeyRef.current = frameKeyForTime(playheadRef.current);
     hasFrameRef.current = false;
+    stopPreviewAudio();
     previewClock.pause(playheadRef.current);
     setIsPlaying(false);
     clearCanvas();
@@ -417,15 +512,15 @@ export const Preview = () => {
       disposed = true;
       queuedRenderRef.current = undefined;
       pendingFrameKeysRef.current.clear();
-      frameCacheRef.current.forEach(releaseFrameLease);
       frameCacheRef.current.clear();
       hasFrameRef.current = false;
+      stopPreviewAudio();
       if (sessionIdRef.current) {
         void desktopApi.nativeMedia.dispose({ targetId: sessionIdRef.current });
         sessionIdRef.current = undefined;
       }
     };
-  }, [clearCanvas, frameKeyForTime, nativeTimeline, releaseFrameLease]);
+  }, [clearCanvas, frameKeyForTime, nativeTimeline, stopPreviewAudio]);
 
   useEffect(() => {
     if (isPlaying || !sessionIdRef.current) {
@@ -478,6 +573,7 @@ export const Preview = () => {
           void desktopApi.nativeMedia.pause({ sessionId });
         }
         previewClock.pause(playbackEndSec);
+        stopPreviewAudio();
         playheadRef.current = playbackEndSec;
         setPreviewTime(playbackEndSec);
         skipNextPausedRenderRef.current = true;
@@ -499,7 +595,8 @@ export const Preview = () => {
     isPlaying,
     playbackEndSec,
     renderAt,
-    setPlayhead
+    setPlayhead,
+    stopPreviewAudio
   ]);
 
   const handlePlay = async () => {
@@ -523,6 +620,7 @@ export const Preview = () => {
       previewClock.start(startTime);
       if (!hasFrameRef.current) setPreviewState("decode-pending");
       setIsPlaying(true);
+      void startPreviewAudio(startTime);
       if (!displayCachedFrame(playbackLastFrameKeyRef.current)) {
         void renderAt(startTime, true);
       }
@@ -539,6 +637,7 @@ export const Preview = () => {
     }
     const pausedTime = playheadRef.current;
     previewClock.pause(pausedTime);
+    stopPreviewAudio();
     skipNextPausedRenderRef.current = true;
     setPlayhead(pausedTime, { markProjectDirty: false });
     setIsPlaying(false);
@@ -551,6 +650,13 @@ export const Preview = () => {
     previewClock.seek(nextTime);
     activeFrameKeyRef.current = frameKeyForTime(nextTime);
     setPlayhead(nextTime);
+    if (isPlaying) {
+      playbackStartTimelineRef.current = nextTime;
+      playbackStartPerformanceRef.current = performance.now();
+      playbackLastFrameKeyRef.current = activeFrameKeyRef.current;
+      previewClock.seek(nextTime);
+      void startPreviewAudio(nextTime);
+    }
     void renderAt(nextTime, true);
   };
 
@@ -580,7 +686,6 @@ export const Preview = () => {
             <canvas
               aria-label="原生视频预览"
               className="viewer-native-canvas"
-              id={NATIVE_PREVIEW_CANVAS_ID}
               ref={canvasRef}
               style={{ opacity: previewState === "ready" ? frameOpacityRef.current : 0 }}
             />
@@ -656,7 +761,10 @@ function createNativePreviewTimeline({
 }): NativeTimelineProject | undefined {
   const assetPaths = Object.fromEntries(
     assets
-      .filter((asset) => asset.kind === "video" && Boolean(asset.absolutePath))
+      .filter(
+        (asset) =>
+          (asset.kind === "video" || asset.kind === "audio") && Boolean(asset.absolutePath)
+      )
       .map((asset) => [asset.id, asset.absolutePath!])
   );
   const videoClips = hasTimelineClips
@@ -677,6 +785,33 @@ function createNativePreviewTimeline({
   if (videoClips.length === 0) {
     return undefined;
   }
+
+  const toNativeClip = (clip: EditorTimelineClip) => ({
+    id: clip.id,
+    assetId: clip.assetId,
+    trackId: clip.trackId,
+    name: "Preview clip",
+    sourceIn: clip.sourceIn,
+    sourceOut: clip.sourceOut,
+    timelineStart: clip.timelineStart,
+    timelineEnd: clip.timelineStart + clip.durationSec,
+    speed: 1,
+    opacity: 1
+  });
+  const audioTracks = (["source-audio-1", "voiceover-1", "music-1"] as const)
+    .map((trackId, order) => ({
+      id: trackId,
+      kind: "audio" as const,
+      name: trackId,
+      order: order + 1,
+      locked: false,
+      muted: false,
+      visible: true,
+      clips: clips
+        .filter((clip) => clip.trackId === trackId && Boolean(assetPaths[clip.assetId]))
+        .map(toNativeClip)
+    }))
+    .filter((track) => track.clips.length > 0);
 
   return {
     assets: [],
@@ -705,19 +840,9 @@ function createNativePreviewTimeline({
           locked: false,
           muted: false,
           visible: true,
-          clips: videoClips.map((clip) => ({
-            id: clip.id,
-            assetId: clip.assetId,
-            trackId: "video-1",
-            name: "Preview clip",
-            sourceIn: clip.sourceIn,
-            sourceOut: clip.sourceOut,
-            timelineStart: clip.timelineStart,
-            timelineEnd: clip.timelineStart + clip.durationSec,
-            speed: 1,
-            opacity: 1
-          }))
-        }
+          clips: videoClips.map(toNativeClip)
+        },
+        ...audioTracks
       ]
     }
   };
@@ -834,9 +959,6 @@ function frameToPixelUpload(
 }
 
 function frameToImageData(frame: NativeVideoFrame, reusable?: ImageData): ImageData {
-  if (frame.data.kind !== "inline") {
-    throw new Error("shared-memory 帧必须由 preload WebGL presenter 处理。");
-  }
   if (frame.format !== "rgba" && frame.format !== "bgra") {
     throw new Error(`Canvas MVP 只支持 RGBA/BGRA，收到 ${frame.format}。`);
   }
@@ -865,6 +987,45 @@ function frameToImageData(frame: NativeVideoFrame, reusable?: ImageData): ImageD
     }
   }
   return image;
+}
+
+function nativeAudioToWebAudioBuffer(
+  context: AudioContext,
+  nativeBuffer: NativeAudioBuffer
+): AudioBuffer {
+  if (nativeBuffer.data.kind !== "inline") {
+    throw new Error("Web Audio 预览仅支持内联 PCM 音频缓冲区。");
+  }
+  if (nativeBuffer.format !== "f32le" && nativeBuffer.format !== "s16le") {
+    throw new Error(`不支持的原生 PCM 格式：${nativeBuffer.format}`);
+  }
+  const binary = atob(nativeBuffer.data.data);
+  const bytesPerSample = nativeBuffer.format === "f32le" ? 4 : 2;
+  const expectedByteLength = nativeBuffer.frames * nativeBuffer.channels * bytesPerSample;
+  if (binary.length < expectedByteLength) {
+    throw new Error("原生 PCM 音频缓冲区长度不足。");
+  }
+  const data = new Uint8Array(expectedByteLength);
+  for (let index = 0; index < data.length; index += 1) {
+    data[index] = binary.charCodeAt(index);
+  }
+  const view = new DataView(data.buffer);
+  const buffer = context.createBuffer(
+    nativeBuffer.channels,
+    nativeBuffer.frames,
+    nativeBuffer.sampleRate
+  );
+  for (let channel = 0; channel < nativeBuffer.channels; channel += 1) {
+    const output = buffer.getChannelData(channel);
+    for (let frame = 0; frame < nativeBuffer.frames; frame += 1) {
+      const offset = (frame * nativeBuffer.channels + channel) * bytesPerSample;
+      output[frame] =
+        nativeBuffer.format === "f32le"
+          ? view.getFloat32(offset, true)
+          : view.getInt16(offset, true) / 32768;
+    }
+  }
+  return buffer;
 }
 
 function nativePreviewStatusText(state: NativePreviewState, error: string | undefined): string {

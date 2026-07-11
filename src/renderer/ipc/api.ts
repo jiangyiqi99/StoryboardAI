@@ -43,7 +43,7 @@ const createUnavailableDesktopApi = (): AivDesktopApi => {
       play: rejectDesktopUnavailable,
       pause: rejectDesktopUnavailable,
       renderFrame: rejectDesktopUnavailable,
-      presentFrame: rejectDesktopUnavailable,
+      renderAudio: rejectDesktopUnavailable,
       encodeTimeline: rejectDesktopUnavailable,
       dispose: rejectDesktopUnavailable
     },

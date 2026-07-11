@@ -27,24 +27,15 @@ export interface NativeFramePlane {
 }
 
 /**
- * `inline` is intended only for diagnostics and small frames. Playback uses a
- * named shared-memory mapping so the renderer can avoid a JSON/base64 copy.
+ * The current portable transport. Video uses WebGL upload after decoding this
+ * payload, while short audio batches feed Web Audio.
  */
-export type NativeBufferTransport =
-  | {
-      kind: "inline";
-      encoding: "base64";
-      data: string;
-      byteLength: number;
-    }
-  | {
-      kind: "shared-memory";
-      /** Memory-mapped file name; only the preload bridge opens it. */
-      name: string;
-      byteLength: number;
-      /** Opaque sidecar lease; the preload bridge releases it after mapping. */
-      leaseId: string;
-    };
+export interface NativeBufferTransport {
+  kind: "inline";
+  encoding: "base64";
+  data: string;
+  byteLength: number;
+}
 
 export interface NativeVideoFrame {
   format: NativePixelFormat;

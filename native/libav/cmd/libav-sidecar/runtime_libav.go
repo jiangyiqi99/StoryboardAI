@@ -5,15 +5,15 @@ package main
 /*
 #cgo pkg-config: libavformat libavcodec libavutil libswscale libswresample
 #include <stdlib.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <unistd.h>
-#include <string.h>
+#include <stdint.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
+#include <libavutil/channel_layout.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixfmt.h>
+#include <libavutil/samplefmt.h>
+#include <libavutil/version.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 
@@ -38,8 +38,12 @@ static int media_frame_height(AVFrame *frame) { return frame->height; }
 static int media_frame_format(AVFrame *frame) { return frame->format; }
 static int media_frame_linesize0(AVFrame *frame) { return frame->linesize[0]; }
 static uint8_t* media_frame_data0(AVFrame *frame) { return frame->data[0]; }
+static int media_frame_sample_rate(AVFrame *frame) { return frame->sample_rate; }
 static int64_t media_frame_pts(AVFrame *frame) {
   return frame->best_effort_timestamp == AV_NOPTS_VALUE ? frame->pts : frame->best_effort_timestamp;
+}
+static int media_frame_has_pts(AVFrame *frame) {
+  return media_frame_pts(frame) != AV_NOPTS_VALUE;
 }
 static int media_allocate_rgba_frame(AVFrame *frame, int width, int height) {
   frame->format = AV_PIX_FMT_RGBA;
@@ -50,6 +54,80 @@ static int media_allocate_rgba_frame(AVFrame *frame, int width, int height) {
 static int media_scale_to_rgba(struct SwsContext *sws, AVFrame *input, AVFrame *output) {
   return sws_scale(sws, (const uint8_t * const *)input->data, input->linesize, 0, input->height, output->data, output->linesize);
 }
+static SwrContext* media_swr_for_f32(AVFrame *input, int output_rate, int output_channels) {
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+  if (input->sample_rate <= 0 || input->ch_layout.nb_channels <= 0) return NULL;
+  AVChannelLayout output_layout;
+  av_channel_layout_default(&output_layout, output_channels);
+  SwrContext *swr = NULL;
+  int code = swr_alloc_set_opts2(
+    &swr,
+    &output_layout,
+    AV_SAMPLE_FMT_FLT,
+    output_rate,
+    &input->ch_layout,
+    (enum AVSampleFormat)input->format,
+    input->sample_rate,
+    0,
+    NULL
+  );
+  av_channel_layout_uninit(&output_layout);
+  if (code < 0) {
+    swr_free(&swr);
+    return NULL;
+  }
+  if (swr_init(swr) < 0) {
+    swr_free(&swr);
+    return NULL;
+  }
+  return swr;
+#else
+  if (input->sample_rate <= 0 || input->channels <= 0) return NULL;
+  uint64_t input_layout = input->channel_layout;
+  if (!input_layout) input_layout = av_get_default_channel_layout(input->channels);
+  SwrContext *swr = swr_alloc_set_opts(
+    NULL,
+    av_get_default_channel_layout(output_channels),
+    AV_SAMPLE_FMT_FLT,
+    output_rate,
+    input_layout,
+    (enum AVSampleFormat)input->format,
+    input->sample_rate,
+    0,
+    NULL
+  );
+  if (!swr || swr_init(swr) < 0) {
+    swr_free(&swr);
+    return NULL;
+  }
+  return swr;
+#endif
+}
+static int media_swr_output_capacity(SwrContext *swr, AVFrame *input, int output_rate) {
+  int64_t delay = swr_get_delay(swr, input->sample_rate);
+  return (int)av_rescale_rnd(delay + input->nb_samples, output_rate, input->sample_rate, AV_ROUND_UP);
+}
+static int media_allocate_f32_audio_frame(AVFrame *frame, int samples, int sample_rate, int channels) {
+  frame->format = AV_SAMPLE_FMT_FLT;
+  frame->sample_rate = sample_rate;
+  frame->nb_samples = samples;
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+  av_channel_layout_default(&frame->ch_layout, channels);
+#else
+  frame->channel_layout = av_get_default_channel_layout(channels);
+  frame->channels = channels;
+#endif
+  return av_frame_get_buffer(frame, 0);
+}
+static int media_resample_to_f32(SwrContext *swr, AVFrame *input, AVFrame *output) {
+  return swr_convert(
+    swr,
+    output->data,
+    output->nb_samples,
+    (const uint8_t * const *)input->extended_data,
+    input->nb_samples
+  );
+}
 static const char* media_error_string(int errnum) {
   static char buffer[AV_ERROR_MAX_STRING_SIZE];
   av_strerror(errnum, buffer, sizeof(buffer));
@@ -57,12 +135,6 @@ static const char* media_error_string(int errnum) {
 }
 static int media_error_again(void) { return AVERROR(EAGAIN); }
 static int media_error_eof(void) { return AVERROR_EOF; }
-static void* media_shared_map(int fd, size_t size) {
-  return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-}
-static int media_shared_map_failed(void *pointer) { return pointer == MAP_FAILED; }
-static void media_shared_copy(void *destination, const void *source, size_t size) { memcpy(destination, source, size); }
-static void media_shared_unmap(void *pointer, size_t size) { if (pointer && pointer != MAP_FAILED) munmap(pointer, size); }
 */
 import "C"
 
@@ -70,35 +142,29 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
-	"os"
 	"sync"
 	"unsafe"
 )
 
 // libavRuntime owns all AVFormatContext/AVCodecContext pairs. Contexts are
-// deliberately confined to this process; Electron sees IDs and data leases.
+// deliberately confined to this process; Electron sees IDs and inline payloads.
 type libavRuntime struct {
 	mu       sync.Mutex
 	nextID   uint64
 	assets   map[string]*nativeAsset
 	sessions map[string]*nativePlaybackSession
-	leases   map[string]*nativeFrameLease
 }
 
 type nativePlaybackSession struct {
-	id        string
-	timeline  map[string]any
-	paths     map[string]string
-	assetIDs  map[string]string
-	state     string
-	time      float64
-	forceSeek bool
-	transport string
-}
-
-type nativeFrameLease struct {
-	id   string
-	name string
+	id             string
+	timeline       map[string]any
+	paths          map[string]string
+	assetIDs       map[string]string
+	audioAssets    map[string]*nativeAudioAsset
+	state          string
+	time           float64
+	forceSeek      bool
+	audioForceSeek bool
 }
 
 type nativeAsset struct {
@@ -111,9 +177,23 @@ type nativeAsset struct {
 	lastPTS     int64
 }
 
+// Audio owns a separate demuxer and codec context from video. Reading packets
+// from one AVFormatContext for both consumers would make preview video and
+// Web Audio steal each other's cursor.
+type nativeAudioAsset struct {
+	path             string
+	format           *C.AVFormatContext
+	codec            *C.AVCodecContext
+	stream           int
+	hasDecoded       bool
+	nextRequestedEnd float64
+	remainder        []float32
+	remainderStart   float64
+}
+
 func newRuntime() runtime {
 	return &libavRuntime{
-		assets: map[string]*nativeAsset{}, sessions: map[string]*nativePlaybackSession{}, leases: map[string]*nativeFrameLease{},
+		assets: map[string]*nativeAsset{}, sessions: map[string]*nativePlaybackSession{},
 	}
 }
 
@@ -152,7 +232,7 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 		if asset == nil {
 			return nil, notFound("asset", assetID)
 		}
-		return r.decodeRGBA(asset, time, true, 0, 0, frameTransport(params))
+		return r.decodeRGBA(asset, time, true, 0, 0)
 	case "createPlaybackSession":
 		timeline, ok := params["timeline"].(map[string]any)
 		if !ok {
@@ -161,7 +241,7 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 		id := r.identifier("session")
 		session := &nativePlaybackSession{
 			id: id, timeline: timeline, paths: stringMap(timeline["assetPaths"]),
-			assetIDs: map[string]string{}, state: "paused", time: 0, forceSeek: true, transport: frameTransport(params),
+			assetIDs: map[string]string{}, audioAssets: map[string]*nativeAudioAsset{}, state: "paused", time: 0, forceSeek: true, audioForceSeek: true,
 		}
 		r.sessions[id] = session
 		return session.result(), nil
@@ -181,6 +261,7 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 			}
 			session.time = math.Max(0, time)
 			session.forceSeek = true
+			session.audioForceSeek = true
 		}
 		if method == "play" {
 			session.state = "playing"
@@ -204,6 +285,24 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 		}
 		session.time = math.Max(0, time)
 		return r.renderFrame(session)
+	case "renderAudio":
+		id, err := stringParam(params, "sessionId")
+		if err != nil {
+			return nil, err
+		}
+		time, err := numberParam(params, "timelineTime")
+		if err != nil {
+			return nil, err
+		}
+		duration, err := numberParam(params, "duration")
+		if err != nil {
+			return nil, err
+		}
+		session := r.sessions[id]
+		if session == nil {
+			return nil, notFound("session", id)
+		}
+		return r.renderAudio(session, math.Max(0, time), duration)
 	case "encodeTimeline":
 		return nil, &rpcError{Code: "TIMELINE_ENCODER_NOT_READY", Message: "Timeline encoding is not implemented in the initial decode sidecar."}
 	case "dispose":
@@ -219,10 +318,6 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 			r.disposeSession(session)
 			delete(r.sessions, id)
 		}
-		if lease := r.leases[id]; lease != nil {
-			r.releaseLease(lease)
-			delete(r.leases, id)
-		}
 		return map[string]any{}, nil
 	case "shutdown":
 		return map[string]any{}, nil
@@ -234,15 +329,14 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 func (r *libavRuntime) Close() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, session := range r.sessions {
+		r.disposeSession(session)
+	}
 	for _, asset := range r.assets {
 		asset.close()
 	}
-	for _, lease := range r.leases {
-		r.releaseLease(lease)
-	}
 	r.assets = map[string]*nativeAsset{}
 	r.sessions = map[string]*nativePlaybackSession{}
-	r.leases = map[string]*nativeFrameLease{}
 }
 
 func (r *libavRuntime) renderFrame(session *nativePlaybackSession) (any, *rpcError) {
@@ -260,7 +354,7 @@ func (r *libavRuntime) renderFrame(session *nativePlaybackSession) (any, *rpcErr
 	}
 	sourceTime := sourceTimeForClip(clip, session.time)
 	width, height := previewFrameSize(session.timeline)
-	frame, decodeErr := r.decodeRGBA(asset, sourceTime, session.forceSeek, width, height, session.transport)
+	frame, decodeErr := r.decodeRGBA(asset, sourceTime, session.forceSeek, width, height)
 	if decodeErr != nil {
 		return nil, decodeErr
 	}
@@ -269,6 +363,67 @@ func (r *libavRuntime) renderFrame(session *nativePlaybackSession) (any, *rpcErr
 		frameData["opacity"] = numberOr(clip["opacity"], 1)
 	}
 	return frame, nil
+}
+
+func (r *libavRuntime) renderAudio(session *nativePlaybackSession, timelineTime, duration float64) (any, *rpcError) {
+	if duration <= 0 || math.IsNaN(duration) {
+		return nil, invalid("duration must be a positive number")
+	}
+	duration = math.Min(duration, 2)
+	sampleRate := previewAudioSampleRate(session.timeline)
+	channels := 2
+	frames := int(math.Ceil(duration * float64(sampleRate)))
+	if frames <= 0 {
+		return nil, invalid("duration is too short to produce an audio buffer")
+	}
+	mix := make([]float32, frames*channels)
+	for _, clip := range activeAudioClips(session.timeline, timelineTime, timelineTime+duration) {
+		assetID, ok := clip["assetId"].(string)
+		if !ok || assetID == "" {
+			continue
+		}
+		asset, assetErr := r.audioAssetForSession(session, assetID)
+		if assetErr != nil {
+			// Some imported videos legitimately have no audio stream. Silent
+			// source-audio clips must not make the video preview fail.
+			continue
+		}
+		clipStart := numberOr(clip["timelineStart"], 0)
+		clipEnd := numberOr(clip["timelineEnd"], clipStart)
+		overlapStart := math.Max(timelineTime, clipStart)
+		overlapEnd := math.Min(timelineTime+duration, clipEnd)
+		if overlapEnd <= overlapStart {
+			continue
+		}
+		speed := numberOr(clip["speed"], 1)
+		if speed <= 0 {
+			speed = 1
+		}
+		sourceSamples, decodeErr := decodeAudioF32(
+			asset,
+			sourceTimeForClip(clip, overlapStart),
+			(overlapEnd-overlapStart)*speed,
+			sampleRate,
+			channels,
+			session.audioForceSeek,
+		)
+		if decodeErr != nil {
+			continue
+		}
+		session.audioForceSeek = false
+		destinationFrames := int(math.Round((overlapEnd - overlapStart) * float64(sampleRate)))
+		destinationOffset := int(math.Round((overlapStart - timelineTime) * float64(sampleRate)))
+		mixAudioSamples(mix, sourceSamples, destinationOffset, destinationFrames, channels)
+	}
+	return map[string]any{
+		"format": "s16le", "sampleRate": sampleRate, "channels": channels, "frames": frames,
+		"pts":      int64(math.Round(timelineTime * float64(sampleRate))),
+		"timebase": map[string]any{"numerator": 1, "denominator": sampleRate},
+		"duration": float64(frames) / float64(sampleRate),
+		"data": map[string]any{
+			"kind": "inline", "encoding": "base64", "data": base64.StdEncoding.EncodeToString(pcmS16Bytes(mix)), "byteLength": len(mix) * 2,
+		},
+	}, nil
 }
 
 func (r *libavRuntime) assetForSession(session *nativePlaybackSession, assetID string) (*nativeAsset, *rpcError) {
@@ -289,6 +444,22 @@ func (r *libavRuntime) assetForSession(session *nativePlaybackSession, assetID s
 	return asset, nil
 }
 
+func (r *libavRuntime) audioAssetForSession(session *nativePlaybackSession, assetID string) (*nativeAudioAsset, *rpcError) {
+	if asset := session.audioAssets[assetID]; asset != nil {
+		return asset, nil
+	}
+	path := session.paths[assetID]
+	if path == "" {
+		return nil, &rpcError{Code: "ASSET_PATH_MISSING", Message: "No local path was provided for timeline audio asset: " + assetID}
+	}
+	asset, err := r.openAudio(path)
+	if err != nil {
+		return nil, err
+	}
+	session.audioAssets[assetID] = asset
+	return asset, nil
+}
+
 func (r *libavRuntime) disposeSession(session *nativePlaybackSession) {
 	for _, nativeID := range session.assetIDs {
 		if asset := r.assets[nativeID]; asset != nil {
@@ -296,6 +467,10 @@ func (r *libavRuntime) disposeSession(session *nativePlaybackSession) {
 			delete(r.assets, nativeID)
 		}
 	}
+	for _, asset := range session.audioAssets {
+		asset.close()
+	}
+	session.audioAssets = map[string]*nativeAudioAsset{}
 }
 
 func (session *nativePlaybackSession) result() map[string]any {
@@ -342,6 +517,46 @@ func (r *libavRuntime) open(path string) (*nativeAsset, *rpcError) {
 	asset := &nativeAsset{id: r.identifier("asset"), path: path, format: format, videoCodec: codecContext, videoStream: int(streamIndex)}
 	r.assets[asset.id] = asset
 	return asset, nil
+}
+
+func (r *libavRuntime) openAudio(path string) (*nativeAudioAsset, *rpcError) {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	var format *C.AVFormatContext
+	if code := C.avformat_open_input(&format, cPath, nil, nil); code < 0 {
+		return nil, libavError("avformat_open_input", code)
+	}
+	if code := C.avformat_find_stream_info(format, nil); code < 0 {
+		C.avformat_close_input(&format)
+		return nil, libavError("avformat_find_stream_info", code)
+	}
+	streamIndex := C.av_find_best_stream(format, C.AVMEDIA_TYPE_AUDIO, -1, -1, nil, 0)
+	if streamIndex < 0 {
+		C.avformat_close_input(&format)
+		return nil, &rpcError{Code: "AUDIO_STREAM_NOT_FOUND", Message: "No audio stream exists in this timeline asset."}
+	}
+	stream := C.media_stream(format, streamIndex)
+	codec := C.avcodec_find_decoder(C.enum_AVCodecID(C.media_stream_codec_id(stream)))
+	if codec == nil {
+		C.avformat_close_input(&format)
+		return nil, &rpcError{Code: "AUDIO_CODEC_NOT_FOUND", Message: "No libav decoder is available for the selected audio stream."}
+	}
+	codecContext := C.avcodec_alloc_context3(codec)
+	if codecContext == nil {
+		C.avformat_close_input(&format)
+		return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "avcodec_alloc_context3 returned nil for audio."}
+	}
+	if code := C.media_copy_parameters(codecContext, stream); code < 0 {
+		C.avcodec_free_context(&codecContext)
+		C.avformat_close_input(&format)
+		return nil, libavError("avcodec_parameters_to_context(audio)", code)
+	}
+	if code := C.avcodec_open2(codecContext, codec, nil); code < 0 {
+		C.avcodec_free_context(&codecContext)
+		C.avformat_close_input(&format)
+		return nil, libavError("avcodec_open2(audio)", code)
+	}
+	return &nativeAudioAsset{path: path, format: format, codec: codecContext, stream: int(streamIndex)}, nil
 }
 
 func (r *libavRuntime) probePath(path string) (any, *rpcError) {
@@ -394,7 +609,7 @@ func (r *libavRuntime) probeFor(path string, format *C.AVFormatContext) map[stri
 	return map[string]any{"path": path, "format": C.GoString(C.media_format_name(format)), "duration": metadata["duration"], "bitRate": int64(C.media_format_bitrate(format)), "streams": streams, "assetMetadata": metadata}
 }
 
-func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bool, outputWidth, outputHeight int, transport string) (any, *rpcError) {
+func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bool, outputWidth, outputHeight int) (any, *rpcError) {
 	stream := C.media_stream(asset.format, C.int(asset.videoStream))
 	numerator := float64(C.media_stream_timebase_num(stream))
 	denominator := float64(C.media_stream_timebase_den(stream))
@@ -438,7 +653,7 @@ func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bo
 				C.av_frame_unref(frame)
 				continue
 			}
-			result, convertErr := r.rgbaFrame(frame, numerator, denominator, outputWidth, outputHeight, transport)
+			result, convertErr := r.rgbaFrame(frame, numerator, denominator, outputWidth, outputHeight)
 			if convertErr == nil {
 				asset.hasDecoded = true
 				asset.lastPTS = int64(pts)
@@ -468,7 +683,161 @@ func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bo
 	return nil, &rpcError{Code: "FRAME_NOT_FOUND", Message: "No decoded video frame exists at or after the requested time."}
 }
 
-func (r *libavRuntime) rgbaFrame(input *C.AVFrame, numerator, denominator float64, outputWidth, outputHeight int, transport string) (any, *rpcError) {
+func decodeAudioF32(asset *nativeAudioAsset, time, duration float64, sampleRate, channels int, forceSeek bool) ([]float32, *rpcError) {
+	stream := C.media_stream(asset.format, C.int(asset.stream))
+	numerator := float64(C.media_stream_timebase_num(stream))
+	denominator := float64(C.media_stream_timebase_den(stream))
+	if numerator <= 0 || denominator <= 0 {
+		return nil, &rpcError{Code: "INVALID_TIMEBASE", Message: "Selected audio stream has an invalid timebase."}
+	}
+	targetFrames := int(math.Ceil(duration * float64(sampleRate)))
+	if targetFrames <= 0 {
+		return []float32{}, nil
+	}
+	shouldSeek := forceSeek || !asset.hasDecoded || math.Abs(time-asset.nextRequestedEnd) > 0.04
+	if shouldSeek {
+		target := C.int64_t(math.Round(math.Max(0, time) * denominator / numerator))
+		if code := C.av_seek_frame(asset.format, C.int(asset.stream), target, C.AVSEEK_FLAG_BACKWARD); code < 0 {
+			return nil, libavError("av_seek_frame(audio)", code)
+		}
+		C.avcodec_flush_buffers(asset.codec)
+		asset.remainder = nil
+		asset.remainderStart = 0
+	}
+
+	result := make([]float32, targetFrames*channels)
+	writtenFrames := 0
+	if !shouldSeek && len(asset.remainder) > 0 {
+		remainderFrames := len(asset.remainder) / channels
+		remainderEnd := asset.remainderStart + float64(remainderFrames)/float64(sampleRate)
+		if time >= asset.remainderStart-0.001 && time < remainderEnd {
+			offset := int(math.Round(math.Max(0, time-asset.remainderStart) * float64(sampleRate)))
+			available := remainderFrames - offset
+			writtenFrames = minInt(targetFrames, available)
+			copy(result, asset.remainder[offset*channels:(offset+writtenFrames)*channels])
+			remainingOffset := offset + writtenFrames
+			if remainingOffset < remainderFrames {
+				asset.remainder = append([]float32(nil), asset.remainder[remainingOffset*channels:]...)
+				asset.remainderStart += float64(remainingOffset) / float64(sampleRate)
+			} else {
+				asset.remainder = nil
+			}
+		} else if time >= remainderEnd {
+			asset.remainder = nil
+		}
+	}
+
+	packet := C.av_packet_alloc()
+	frame := C.av_frame_alloc()
+	if packet == nil || frame == nil {
+		if packet != nil {
+			C.av_packet_free(&packet)
+		}
+		if frame != nil {
+			C.av_frame_free(&frame)
+		}
+		return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "Unable to allocate packet/frame for audio decode."}
+	}
+	defer C.av_packet_free(&packet)
+	defer C.av_frame_free(&frame)
+
+	for writtenFrames < targetFrames {
+		code := C.avcodec_receive_frame(asset.codec, frame)
+		if code == 0 {
+			frameSampleRate := int(C.media_frame_sample_rate(frame))
+			if frameSampleRate <= 0 {
+				C.av_frame_unref(frame)
+				continue
+			}
+			frameStart := float64(C.media_frame_pts(frame)) * numerator / denominator
+			if C.media_frame_has_pts(frame) == 0 || math.IsNaN(frameStart) || math.IsInf(frameStart, 0) {
+				frameStart = time + float64(writtenFrames)/float64(sampleRate)
+			}
+			values, convertErr := resampleFrameToF32(frame, sampleRate, channels)
+			C.av_frame_unref(frame)
+			if convertErr != nil {
+				return nil, convertErr
+			}
+			frameCount := len(values) / channels
+			if frameCount == 0 {
+				continue
+			}
+			expectedTime := time + float64(writtenFrames)/float64(sampleRate)
+			if frameStart > expectedTime+0.001 {
+				writtenFrames = minInt(targetFrames, int(math.Round((frameStart-time)*float64(sampleRate))))
+			}
+			sourceOffset := int(math.Round(math.Max(0, expectedTime-frameStart) * float64(sampleRate)))
+			if sourceOffset >= frameCount {
+				continue
+			}
+			copyFrames := minInt(targetFrames-writtenFrames, frameCount-sourceOffset)
+			copy(
+				result[writtenFrames*channels:(writtenFrames+copyFrames)*channels],
+				values[sourceOffset*channels:(sourceOffset+copyFrames)*channels],
+			)
+			writtenFrames += copyFrames
+			if sourceOffset+copyFrames < frameCount {
+				asset.remainder = append([]float32(nil), values[(sourceOffset+copyFrames)*channels:]...)
+				asset.remainderStart = frameStart + float64(sourceOffset+copyFrames)/float64(sampleRate)
+			}
+			continue
+		}
+		if code != C.media_error_again() && code != C.media_error_eof() {
+			return nil, libavError("avcodec_receive_frame(audio)", code)
+		}
+		if code == C.media_error_eof() {
+			break
+		}
+		code = C.av_read_frame(asset.format, packet)
+		if code < 0 {
+			break
+		}
+		if C.media_packet_stream_index(packet) != C.int(asset.stream) {
+			C.av_packet_unref(packet)
+			continue
+		}
+		if code = C.avcodec_send_packet(asset.codec, packet); code < 0 {
+			C.av_packet_unref(packet)
+			return nil, libavError("avcodec_send_packet(audio)", code)
+		}
+		C.av_packet_unref(packet)
+	}
+	asset.hasDecoded = true
+	asset.nextRequestedEnd = time + duration
+	return result, nil
+}
+
+func resampleFrameToF32(input *C.AVFrame, sampleRate, channels int) ([]float32, *rpcError) {
+	swr := C.media_swr_for_f32(input, C.int(sampleRate), C.int(channels))
+	if swr == nil {
+		return nil, &rpcError{Code: "SWR_CONTEXT_FAILED", Message: "Unable to configure the libav audio resampler."}
+	}
+	defer C.swr_free(&swr)
+	capacity := C.media_swr_output_capacity(swr, input, C.int(sampleRate))
+	if capacity <= 0 {
+		return []float32{}, nil
+	}
+	output := C.av_frame_alloc()
+	if output == nil {
+		return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "Unable to allocate resampled audio frame."}
+	}
+	defer C.av_frame_free(&output)
+	if code := C.media_allocate_f32_audio_frame(output, capacity, C.int(sampleRate), C.int(channels)); code < 0 {
+		return nil, libavError("av_frame_get_buffer(audio)", code)
+	}
+	converted := C.media_resample_to_f32(swr, input, output)
+	if converted < 0 {
+		return nil, libavError("swr_convert", converted)
+	}
+	if converted == 0 {
+		return []float32{}, nil
+	}
+	bytes := C.GoBytes(unsafe.Pointer(C.media_frame_data0(output)), C.int(converted*C.int(channels)*4))
+	values := append([]float32(nil), unsafe.Slice((*float32)(unsafe.Pointer(&bytes[0])), int(converted)*channels)...)
+	return values, nil
+}
+
+func (r *libavRuntime) rgbaFrame(input *C.AVFrame, numerator, denominator float64, outputWidth, outputHeight int) (any, *rpcError) {
 	width, height := C.media_frame_width(input), C.media_frame_height(input)
 	if outputWidth <= 0 || outputHeight <= 0 {
 		outputWidth, outputHeight = int(width), int(height)
@@ -493,66 +862,16 @@ func (r *libavRuntime) rgbaFrame(input *C.AVFrame, numerator, denominator float6
 	stride := C.media_frame_linesize0(output)
 	byteLength := int(stride * scaledHeight)
 	pts := C.media_frame_pts(input)
-	data := map[string]any{}
-	if transport == "shared-memory" {
-		lease, leaseErr := r.createFrameLease(unsafe.Pointer(C.media_frame_data0(output)), byteLength)
-		if leaseErr != nil {
-			return nil, leaseErr
-		}
-		data = map[string]any{
-			"kind": "shared-memory", "name": lease.name, "byteLength": byteLength, "leaseId": lease.id,
-		}
-	} else {
-		bytes := C.GoBytes(unsafe.Pointer(C.media_frame_data0(output)), C.int(byteLength))
-		data = map[string]any{
-			"kind": "inline", "encoding": "base64", "data": base64.StdEncoding.EncodeToString(bytes), "byteLength": byteLength,
-		}
-	}
+	bytes := C.GoBytes(unsafe.Pointer(C.media_frame_data0(output)), C.int(byteLength))
 	return map[string]any{
 		"format": "rgba", "width": int(scaledWidth), "height": int(scaledHeight), "stride": int(stride),
 		"planes": []any{map[string]any{"offset": 0, "byteLength": byteLength, "stride": int(stride)}},
 		"pts":    int64(pts), "timebase": map[string]any{"numerator": numerator, "denominator": denominator},
 		"duration": 0, "colorSpace": "unknown", "opacity": 1, "hasAlpha": true,
-		"data": data,
+		"data": map[string]any{
+			"kind": "inline", "encoding": "base64", "data": base64.StdEncoding.EncodeToString(bytes), "byteLength": byteLength,
+		},
 	}, nil
-}
-
-func (r *libavRuntime) createFrameLease(source unsafe.Pointer, byteLength int) (*nativeFrameLease, *rpcError) {
-	if byteLength <= 0 {
-		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Cannot allocate an empty native preview frame lease."}
-	}
-	leaseFile, err := os.CreateTemp("", fmt.Sprintf("storyboardai-frame-%d-*", os.Getpid()))
-	if err != nil {
-		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Unable to create the native preview memory-mapped frame lease."}
-	}
-	name := leaseFile.Name()
-	if err := leaseFile.Chmod(0600); err != nil {
-		leaseFile.Close()
-		os.Remove(name)
-		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Unable to secure the native preview memory-mapped frame lease."}
-	}
-	if err := leaseFile.Truncate(int64(byteLength)); err != nil {
-		leaseFile.Close()
-		os.Remove(name)
-		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Unable to size the native preview memory-mapped frame lease."}
-	}
-	mapped := C.media_shared_map(C.int(leaseFile.Fd()), C.size_t(byteLength))
-	if C.media_shared_map_failed(mapped) != 0 {
-		leaseFile.Close()
-		os.Remove(name)
-		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Unable to map the native preview shared-memory lease."}
-	}
-	C.media_shared_copy(mapped, source, C.size_t(byteLength))
-	C.media_shared_unmap(mapped, C.size_t(byteLength))
-	leaseFile.Close()
-	id := r.identifier("lease")
-	lease := &nativeFrameLease{id: id, name: name}
-	r.leases[id] = lease
-	return lease, nil
-}
-
-func (r *libavRuntime) releaseLease(lease *nativeFrameLease) {
-	_ = os.Remove(lease.name)
 }
 
 func (asset *nativeAsset) close() {
@@ -563,6 +882,53 @@ func (asset *nativeAsset) close() {
 		C.avformat_close_input(&asset.format)
 	}
 }
+
+func (asset *nativeAudioAsset) close() {
+	if asset.codec != nil {
+		C.avcodec_free_context(&asset.codec)
+	}
+	if asset.format != nil {
+		C.avformat_close_input(&asset.format)
+	}
+}
+
+func pcmS16Bytes(values []float32) []byte {
+	if len(values) == 0 {
+		return []byte{}
+	}
+	bytes := make([]byte, len(values)*2)
+	packed := unsafe.Slice((*int16)(unsafe.Pointer(&bytes[0])), len(values))
+	for index, value := range values {
+		// Mixing may exceed the Web Audio nominal range. Keep the returned PCM
+		// bounded so multiple overlapping tracks cannot cause hard clipping.
+		value = float32(math.Max(-1, math.Min(1, float64(value))))
+		packed[index] = int16(math.Round(float64(value) * 32767))
+	}
+	return bytes
+}
+
+func mixAudioSamples(destination, source []float32, destinationOffset, destinationFrames, channels int) {
+	if channels <= 0 || destinationFrames <= 0 || len(source) < channels {
+		return
+	}
+	sourceFrames := len(source) / channels
+	for frame := 0; frame < destinationFrames; frame++ {
+		destinationFrame := destinationOffset + frame
+		if destinationFrame < 0 || (destinationFrame+1)*channels > len(destination) {
+			break
+		}
+		position := float64(frame) * float64(sourceFrames) / float64(destinationFrames)
+		left := minInt(sourceFrames-1, int(position))
+		right := minInt(sourceFrames-1, left+1)
+		fraction := float32(position - float64(left))
+		for channel := 0; channel < channels; channel++ {
+			first := source[left*channels+channel]
+			second := source[right*channels+channel]
+			destination[destinationFrame*channels+channel] += first + (second-first)*fraction
+		}
+	}
+}
+
 func (r *libavRuntime) identifier(prefix string) string {
 	r.nextID++
 	return fmt.Sprintf("%s-%d", prefix, r.nextID)
@@ -588,6 +954,21 @@ func numberOr(value any, fallback float64) float64 {
 	}
 	return number
 }
+
+func boolOr(value any, fallback bool) bool {
+	boolean, ok := value.(bool)
+	if !ok {
+		return fallback
+	}
+	return boolean
+}
+
+func minInt(left, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}
 func stringMap(value any) map[string]string {
 	result := map[string]string{}
 	values, ok := value.(map[string]any)
@@ -601,11 +982,50 @@ func stringMap(value any) map[string]string {
 	}
 	return result
 }
-func frameTransport(params map[string]any) string {
-	if transport, ok := params["frameTransport"].(string); ok && transport == "shared-memory" {
-		return "shared-memory"
+func previewAudioSampleRate(project map[string]any) int {
+	settings, ok := project["settings"].(map[string]any)
+	if !ok {
+		return 48000
 	}
-	return "inline"
+	rate := int(numberOr(settings["audioSampleRate"], 48000))
+	if rate < 8000 || rate > 192000 {
+		return 48000
+	}
+	return rate
+}
+
+func activeAudioClips(project map[string]any, start, end float64) []map[string]any {
+	timeline, ok := project["timeline"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	tracks, ok := timeline["tracks"].([]any)
+	if !ok {
+		return nil
+	}
+	clips := make([]map[string]any, 0)
+	for _, trackValue := range tracks {
+		track, ok := trackValue.(map[string]any)
+		if !ok || track["kind"] != "audio" || boolOr(track["muted"], false) {
+			continue
+		}
+		trackClips, ok := track["clips"].([]any)
+		if !ok {
+			continue
+		}
+		for _, clipValue := range trackClips {
+			clip, ok := clipValue.(map[string]any)
+			if !ok || boolOr(clip["muted"], false) {
+				continue
+			}
+			clipStart := numberOr(clip["timelineStart"], 0)
+			clipEnd := numberOr(clip["timelineEnd"], clipStart)
+			if clipEnd > start && clipStart < end {
+				clips = append(clips, clip)
+			}
+		}
+	}
+	return clips
 }
 func activeVideoClip(project map[string]any, timelineTime float64) (map[string]any, *rpcError) {
 	timeline, ok := project["timeline"].(map[string]any)

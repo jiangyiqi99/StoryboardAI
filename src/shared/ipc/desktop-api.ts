@@ -16,6 +16,7 @@ import type {
   MediaSelectFilesRequest,
   NativeMediaCreatePlaybackSessionRequest,
   NativeMediaDecodeFrameRequest,
+  NativeMediaRenderAudioRequest,
   NativeMediaDisposeRequest,
   NativeMediaEncodeTimelineRequest,
   NativeMediaOpenAssetRequest,
@@ -46,6 +47,7 @@ import type { AiGenerationJob } from "../types/ai";
 import type { AssetMetadata } from "../types/asset";
 import type {
   NativeEncodeResult,
+  NativeAudioBuffer,
   NativeMediaAsset,
   NativeMediaProbe,
   NativePlaybackSession,
@@ -105,8 +107,7 @@ export interface AivDesktopApi {
     play(request: NativeMediaSessionRequest): Promise<NativePlaybackSession>;
     pause(request: NativeMediaSessionRequest): Promise<NativePlaybackSession>;
     renderFrame(request: NativeMediaRenderFrameRequest): Promise<NativeVideoFrame>;
-    /** Uploads a shared-memory frame to a canvas from the preload world. */
-    presentFrame(request: { canvasId: string; frame: NativeVideoFrame }): Promise<void>;
+    renderAudio(request: NativeMediaRenderAudioRequest): Promise<NativeAudioBuffer>;
     encodeTimeline(request: NativeMediaEncodeTimelineRequest): Promise<NativeEncodeResult>;
     dispose(request: NativeMediaDisposeRequest): Promise<void>;
   };

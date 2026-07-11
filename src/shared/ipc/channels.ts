@@ -21,6 +21,7 @@ export const IPC_CHANNELS = {
   NATIVE_MEDIA_PLAY: "nativeMedia:play",
   NATIVE_MEDIA_PAUSE: "nativeMedia:pause",
   NATIVE_MEDIA_RENDER_FRAME: "nativeMedia:renderFrame",
+  NATIVE_MEDIA_RENDER_AUDIO: "nativeMedia:renderAudio",
   NATIVE_MEDIA_ENCODE_TIMELINE: "nativeMedia:encodeTimeline",
   NATIVE_MEDIA_DISPOSE: "nativeMedia:dispose",
   APP_CONFIG_GET: "appConfig:get",

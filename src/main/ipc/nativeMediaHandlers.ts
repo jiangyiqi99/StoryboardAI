@@ -8,6 +8,7 @@ import type {
   NativeMediaOpenAssetRequest,
   NativeMediaProbeRequest,
   NativeMediaRenderFrameRequest,
+  NativeMediaRenderAudioRequest,
   NativeMediaSeekRequest,
   NativeMediaSessionRequest
 } from "@shared/ipc/contracts";
@@ -42,6 +43,11 @@ export const registerNativeMediaHandlers = (services: AppServices): void => {
     IPC_CHANNELS.NATIVE_MEDIA_RENDER_FRAME,
     (_event, request: NativeMediaRenderFrameRequest) =>
       runtime.renderFrame(request.sessionId, request.timelineTime)
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.NATIVE_MEDIA_RENDER_AUDIO,
+    (_event, request: NativeMediaRenderAudioRequest) =>
+      runtime.renderAudio(request.sessionId, request.timelineTime, request.duration)
   );
   ipcMain.handle(
     IPC_CHANNELS.NATIVE_MEDIA_ENCODE_TIMELINE,
