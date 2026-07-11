@@ -58,6 +58,11 @@ export interface SolidColorTimelineOptions {
   durationSec: number;
 }
 
+export interface SetPlayheadOptions {
+  /** Playback is transient UI state and must not make the project dirty. */
+  markProjectDirty?: boolean;
+}
+
 interface EditorContextValue {
   project?: Project;
   projectRuntime?: ProjectRuntimeContext;
@@ -110,7 +115,7 @@ interface EditorContextValue {
   replaceClipAsset(clipId: string, assetId: string): void;
   deleteClip(clipId?: string): void;
   splitClip(clipId: string | undefined, splitTime: number): void;
-  setPlayhead(time: number): void;
+  setPlayhead(time: number, options?: SetPlayheadOptions): void;
   nudgePlayhead(delta: number): void;
   resolveTimelinePreview(time: number): TimelinePreviewTarget | undefined;
 }
@@ -987,9 +992,11 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const setPlayhead = useCallback(
-    (time: number) => {
+    (time: number, options?: SetPlayheadOptions) => {
       setPlayheadSec(clampPlayhead(time, timelineDurationSec));
-      markProjectDirty();
+      if (options?.markProjectDirty !== false) {
+        markProjectDirty();
+      }
     },
     [markProjectDirty, timelineDurationSec]
   );

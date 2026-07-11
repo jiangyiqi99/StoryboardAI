@@ -24,6 +24,7 @@ import {
   type PointerEvent
 } from "react";
 import { useEditor } from "../../app/EditorContext";
+import { previewClock } from "../../app/previewClock";
 import type {
   EditorRgbColor,
   EditorTimelineClip,
@@ -93,6 +94,8 @@ export const Timeline = () => {
     timelineFps
   } = useEditor();
   const canvasRef = useRef<HTMLDivElement>(null);
+  const playheadIndicatorRef = useRef<HTMLDivElement>(null);
+  const pixelsPerSecondRef = useRef(DEFAULT_PIXELS_PER_SECOND);
   const latestFrameRequest = useRef(0);
   const [dragState, setDragState] = useState<ClipDragState | null>(null);
   const [isScrubbing, setIsScrubbing] = useState(false);
@@ -100,6 +103,26 @@ export const Timeline = () => {
   const [pendingSolidDrop, setPendingSolidDrop] = useState<PendingSolidDrop | null>(null);
   const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
   const [pixelsPerSecond, setPixelsPerSecond] = useState(DEFAULT_PIXELS_PER_SECOND);
+
+  useEffect(() => {
+    pixelsPerSecondRef.current = pixelsPerSecond;
+    const clock = previewClock.getSnapshot();
+    if (clock.isPlaying && playheadIndicatorRef.current) {
+      playheadIndicatorRef.current.style.left = `${clock.time * pixelsPerSecond}px`;
+    }
+  }, [pixelsPerSecond]);
+
+  useEffect(() => {
+    const updatePlayhead = ({ isPlaying, time }: ReturnType<typeof previewClock.getSnapshot>) => {
+      if (!isPlaying || !playheadIndicatorRef.current) {
+        return;
+      }
+      playheadIndicatorRef.current.style.left = `${time * pixelsPerSecondRef.current}px`;
+    };
+
+    updatePlayhead(previewClock.getSnapshot());
+    return previewClock.subscribe(updatePlayhead);
+  }, []);
 
   const fitTimelineDurationSec = Math.max(MIN_TIMELINE_AREA_SEC, timelineDurationSec);
   const minPixelsPerSecond =
@@ -643,6 +666,7 @@ export const Timeline = () => {
             <div
               className="playhead"
               onPointerDown={beginScrubbing}
+              ref={playheadIndicatorRef}
               style={{
                 left: `${playheadSec * pixelsPerSecond}px`
               }}
