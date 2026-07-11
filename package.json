@@ -9,13 +9,14 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "tsc --noEmit && electron-vite build",
-    "dist": "npm run build && electron-builder",
-    "dist:mac": "npm run build && electron-builder --mac --universal",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:linux": "npm run build && electron-builder --linux",
+    "dist": "npm run native:libav && npm run build && electron-builder",
+    "dist:mac": "npm run native:libav && npm run build && electron-builder --mac --universal",
+    "dist:win": "npm run native:libav && npm run build && electron-builder --win",
+    "dist:linux": "npm run native:libav && npm run build && electron-builder --linux",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "native:libav": "node native/libav/scripts/build.mjs"
+    "native:libav": "node native/libav/scripts/build.mjs && node native/shared-memory-bridge/scripts/build.mjs",
+    "native:bridge": "node native/shared-memory-bridge/scripts/build.mjs"
   },
   "build": {
     "appId": "ai.storyboard.editor",
@@ -28,6 +29,16 @@
     "files": [
       "out/**",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/libav/bin",
+        "to": "native/libav/bin"
+      },
+      {
+        "from": "native/shared-memory-bridge/bin",
+        "to": "native/shared-memory-bridge/bin"
+      }
     ],
     "mac": {
       "category": "public.app-category.video",

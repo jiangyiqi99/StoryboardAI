@@ -28,6 +28,7 @@ type NativePreviewState =
 
 const FRAME_CACHE_CAPACITY = 3;
 const PREFETCH_LEAD_FRAMES = 1;
+const NATIVE_PREVIEW_CANVAS_ID = "native-preview-canvas";
 
 interface QueuedRenderRequest {
   timelineTime: number;
@@ -49,7 +50,8 @@ export const Preview = () => {
     project
   } = useEditor();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
+  const canvas2dContextRef = useRef<CanvasRenderingContext2D | null>(null);
+  const webglRendererRef = useRef<PreviewWebglRenderer | null>(null);
   const canvasImageDataRef = useRef<ImageData>();
   const sessionIdRef = useRef<string>();
   const sessionGenerationRef = useRef(0);
@@ -146,13 +148,21 @@ export const Preview = () => {
 
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
-    const context = canvasContextRef.current;
-    if (canvas && context) {
+    const context = canvas2dContextRef.current;
+    if (webglRendererRef.current) {
+      webglRendererRef.current.clear();
+    } else if (canvas && context) {
       context.clearRect(0, 0, canvas.width, canvas.height);
     }
     canvasImageDataRef.current = undefined;
     lastDisplayedFrameKeyRef.current = undefined;
     hasFrameRef.current = false;
+  }, []);
+
+  const releaseFrameLease = useCallback((frame: NativeVideoFrame | undefined) => {
+    if (frame?.data.kind === "shared-memory") {
+      void desktopApi.nativeMedia.dispose({ targetId: frame.data.leaseId });
+    }
   }, []);
 
   const drawFrame = useCallback((frame: NativeVideoFrame) => {
@@ -164,19 +174,41 @@ export const Preview = () => {
     if (canvas.width !== frame.width || canvas.height !== frame.height) {
       canvas.width = frame.width;
       canvas.height = frame.height;
-      canvasContextRef.current = null;
+      canvas2dContextRef.current = null;
       canvasImageDataRef.current = undefined;
+      webglRendererRef.current?.resize(frame.width, frame.height);
     }
-    const image = frameToImageData(frame, canvasImageDataRef.current);
-    canvasImageDataRef.current = image;
-    const context =
-      canvasContextRef.current ??
-      canvas.getContext("2d", { alpha: false, desynchronized: true });
-    if (!context) {
-      throw new Error("无法创建原生预览画布上下文");
+
+    if (frame.data.kind === "shared-memory") {
+      void desktopApi.nativeMedia
+        .presentFrame({ canvasId: NATIVE_PREVIEW_CANVAS_ID, frame })
+        .catch((error) => {
+          setPreviewState("decode-failed");
+          setPreviewError(formatNativePreviewError(error));
+        });
+      frameOpacityRef.current = frame.opacity;
+      canvas.style.opacity = String(frame.opacity);
+      return;
     }
-    canvasContextRef.current = context;
-    context.putImageData(image, 0, 0);
+
+    const webgl = webglRendererRef.current ?? createPreviewWebglRenderer(canvas);
+    if (webgl) {
+      webglRendererRef.current = webgl;
+      const upload = frameToPixelUpload(frame, canvasImageDataRef.current);
+      if (upload.image) canvasImageDataRef.current = upload.image;
+      webgl.draw(frame, upload.pixels);
+    } else {
+      const image = frameToImageData(frame, canvasImageDataRef.current);
+      canvasImageDataRef.current = image;
+      const context =
+        canvas2dContextRef.current ??
+        canvas.getContext("2d", { alpha: false, desynchronized: true });
+      if (!context) {
+        throw new Error("无法创建原生预览画布上下文");
+      }
+      canvas2dContextRef.current = context;
+      context.putImageData(image, 0, 0);
+    }
     frameOpacityRef.current = frame.opacity;
     canvas.style.opacity = String(frame.opacity);
   }, []);
@@ -273,12 +305,19 @@ export const Preview = () => {
               timelineTime: request.timelineTime
             });
             pendingFrameKeysRef.current.delete(request.frameKey);
-            if (generation !== sessionGenerationRef.current) continue;
+            if (generation !== sessionGenerationRef.current) {
+              releaseFrameLease(frame);
+              continue;
+            }
+            const replacedFrame = frameCacheRef.current.get(request.frameKey);
+            if (replacedFrame && replacedFrame !== frame) releaseFrameLease(replacedFrame);
             frameCacheRef.current.set(request.frameKey, frame);
             while (frameCacheRef.current.size > FRAME_CACHE_CAPACITY) {
               const oldestKey = frameCacheRef.current.keys().next().value;
               if (oldestKey === undefined) break;
+              const evictedFrame = frameCacheRef.current.get(oldestKey);
               frameCacheRef.current.delete(oldestKey);
+              releaseFrameLease(evictedFrame);
             }
             if (request.display || request.frameKey <= activeFrameKeyRef.current) {
               displayCachedFrame(request.frameKey);
@@ -321,7 +360,8 @@ export const Preview = () => {
       frameKeyForTime,
       frameStep,
       frameTimeForKey,
-      playbackEndSec
+      playbackEndSec,
+      releaseFrameLease
     ]
   );
 
@@ -335,6 +375,7 @@ export const Preview = () => {
     framePendingRef.current = false;
     queuedRenderRef.current = undefined;
     pendingFrameKeysRef.current.clear();
+    frameCacheRef.current.forEach(releaseFrameLease);
     frameCacheRef.current.clear();
     activeFrameKeyRef.current = frameKeyForTime(playheadRef.current);
     hasFrameRef.current = false;
@@ -376,6 +417,7 @@ export const Preview = () => {
       disposed = true;
       queuedRenderRef.current = undefined;
       pendingFrameKeysRef.current.clear();
+      frameCacheRef.current.forEach(releaseFrameLease);
       frameCacheRef.current.clear();
       hasFrameRef.current = false;
       if (sessionIdRef.current) {
@@ -383,7 +425,7 @@ export const Preview = () => {
         sessionIdRef.current = undefined;
       }
     };
-  }, [clearCanvas, frameKeyForTime, nativeTimeline]);
+  }, [clearCanvas, frameKeyForTime, nativeTimeline, releaseFrameLease]);
 
   useEffect(() => {
     if (isPlaying || !sessionIdRef.current) {
@@ -538,6 +580,7 @@ export const Preview = () => {
             <canvas
               aria-label="原生视频预览"
               className="viewer-native-canvas"
+              id={NATIVE_PREVIEW_CANVAS_ID}
               ref={canvasRef}
               style={{ opacity: previewState === "ready" ? frameOpacityRef.current : 0 }}
             />
@@ -680,9 +723,119 @@ function createNativePreviewTimeline({
   };
 }
 
+interface PreviewWebglRenderer {
+  clear(): void;
+  draw(frame: NativeVideoFrame, pixels: Uint8Array): void;
+  resize(width: number, height: number): void;
+}
+
+function createPreviewWebglRenderer(canvas: HTMLCanvasElement): PreviewWebglRenderer | null {
+  const gl = canvas.getContext("webgl2", {
+    alpha: false,
+    antialias: false,
+    desynchronized: true,
+    preserveDrawingBuffer: false
+  });
+  if (!gl) return null;
+
+  const vertex = gl.createShader(gl.VERTEX_SHADER);
+  const fragment = gl.createShader(gl.FRAGMENT_SHADER);
+  const program = gl.createProgram();
+  const texture = gl.createTexture();
+  const vertexBuffer = gl.createBuffer();
+  if (!vertex || !fragment || !program || !texture || !vertexBuffer) return null;
+
+  gl.shaderSource(
+    vertex,
+    `#version 300 es
+      in vec2 aPosition;
+      out vec2 vUv;
+      void main() {
+        gl_Position = vec4(aPosition, 0.0, 1.0);
+        vUv = vec2((aPosition.x + 1.0) * 0.5, 1.0 - (aPosition.y + 1.0) * 0.5);
+      }`
+  );
+  gl.shaderSource(
+    fragment,
+    `#version 300 es
+      precision mediump float;
+      uniform sampler2D uFrame;
+      in vec2 vUv;
+      out vec4 outColor;
+      void main() { outColor = texture(uFrame, vUv); }`
+  );
+  gl.compileShader(vertex);
+  gl.compileShader(fragment);
+  if (!gl.getShaderParameter(vertex, gl.COMPILE_STATUS) || !gl.getShaderParameter(fragment, gl.COMPILE_STATUS)) {
+    return null;
+  }
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return null;
+
+  const position = gl.getAttribLocation(program, "aPosition");
+  gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+  gl.bufferData(
+    gl.ARRAY_BUFFER,
+    new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]),
+    gl.STATIC_DRAW
+  );
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.useProgram(program);
+  gl.uniform1i(gl.getUniformLocation(program, "uFrame"), 0);
+
+  const resize = (width: number, height: number) => gl.viewport(0, 0, width, height);
+  resize(canvas.width, canvas.height);
+
+  return {
+    clear: () => {
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    },
+    resize,
+    draw: (frame, pixels) => {
+      gl.viewport(0, 0, frame.width, frame.height);
+      gl.useProgram(program);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, frame.stride === frame.width * 4 ? 0 : frame.stride / 4);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        frame.width,
+        frame.height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        pixels
+      );
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+      gl.enableVertexAttribArray(position);
+      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+  };
+}
+
+function frameToPixelUpload(
+  frame: NativeVideoFrame,
+  reusable?: ImageData
+): { pixels: Uint8Array; image?: ImageData } {
+  const image = frameToImageData(frame, reusable);
+  return { pixels: image.data, image };
+}
+
 function frameToImageData(frame: NativeVideoFrame, reusable?: ImageData): ImageData {
   if (frame.data.kind !== "inline") {
-    throw new Error("当前 renderer 尚不能映射 shared-memory 帧。");
+    throw new Error("shared-memory 帧必须由 preload WebGL presenter 处理。");
   }
   if (frame.format !== "rgba" && frame.format !== "bgra") {
     throw new Error(`Canvas MVP 只支持 RGBA/BGRA，收到 ${frame.format}。`);

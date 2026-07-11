@@ -105,6 +105,8 @@ export interface AivDesktopApi {
     play(request: NativeMediaSessionRequest): Promise<NativePlaybackSession>;
     pause(request: NativeMediaSessionRequest): Promise<NativePlaybackSession>;
     renderFrame(request: NativeMediaRenderFrameRequest): Promise<NativeVideoFrame>;
+    /** Uploads a shared-memory frame to a canvas from the preload world. */
+    presentFrame(request: { canvasId: string; frame: NativeVideoFrame }): Promise<void>;
     encodeTimeline(request: NativeMediaEncodeTimelineRequest): Promise<NativeEncodeResult>;
     dispose(request: NativeMediaDisposeRequest): Promise<void>;
   };

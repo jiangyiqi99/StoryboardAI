@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { IPC_CHANNELS } from "@shared/ipc/channels";
 import type { IpcInvokeMap } from "@shared/ipc/contracts";
 import type { AivDesktopApi } from "@shared/ipc/desktop-api";
+import { NativeFramePresenter } from "./nativeFramePresenter";
 
 const invoke = <TChannel extends keyof IpcInvokeMap>(
   channel: TChannel,
@@ -9,6 +10,10 @@ const invoke = <TChannel extends keyof IpcInvokeMap>(
 ): Promise<IpcInvokeMap[TChannel]["response"]> => {
   return ipcRenderer.invoke(channel, request);
 };
+
+const nativeFramePresenter = new NativeFramePresenter((leaseId) =>
+  invoke(IPC_CHANNELS.NATIVE_MEDIA_DISPOSE, { targetId: leaseId })
+);
 
 export const desktopApi: AivDesktopApi = {
   config: {
@@ -54,6 +59,7 @@ export const desktopApi: AivDesktopApi = {
     play: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_PLAY, request),
     pause: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_PAUSE, request),
     renderFrame: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_RENDER_FRAME, request),
+    presentFrame: (request) => nativeFramePresenter.present(request.canvasId, request.frame),
     encodeTimeline: (request) =>
       invoke(IPC_CHANNELS.NATIVE_MEDIA_ENCODE_TIMELINE, request),
     dispose: (request) => invoke(IPC_CHANNELS.NATIVE_MEDIA_DISPOSE, request)

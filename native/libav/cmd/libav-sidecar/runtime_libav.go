@@ -5,6 +5,10 @@ package main
 /*
 #cgo pkg-config: libavformat libavcodec libavutil libswscale libswresample
 #include <stdlib.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <string.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
@@ -53,6 +57,12 @@ static const char* media_error_string(int errnum) {
 }
 static int media_error_again(void) { return AVERROR(EAGAIN); }
 static int media_error_eof(void) { return AVERROR_EOF; }
+static void* media_shared_map(int fd, size_t size) {
+  return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+}
+static int media_shared_map_failed(void *pointer) { return pointer == MAP_FAILED; }
+static void media_shared_copy(void *destination, const void *source, size_t size) { memcpy(destination, source, size); }
+static void media_shared_unmap(void *pointer, size_t size) { if (pointer && pointer != MAP_FAILED) munmap(pointer, size); }
 */
 import "C"
 
@@ -60,6 +70,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"os"
 	"sync"
 	"unsafe"
 )
@@ -71,6 +82,7 @@ type libavRuntime struct {
 	nextID   uint64
 	assets   map[string]*nativeAsset
 	sessions map[string]*nativePlaybackSession
+	leases   map[string]*nativeFrameLease
 }
 
 type nativePlaybackSession struct {
@@ -81,6 +93,12 @@ type nativePlaybackSession struct {
 	state     string
 	time      float64
 	forceSeek bool
+	transport string
+}
+
+type nativeFrameLease struct {
+	id   string
+	name string
 }
 
 type nativeAsset struct {
@@ -94,7 +112,9 @@ type nativeAsset struct {
 }
 
 func newRuntime() runtime {
-	return &libavRuntime{assets: map[string]*nativeAsset{}, sessions: map[string]*nativePlaybackSession{}}
+	return &libavRuntime{
+		assets: map[string]*nativeAsset{}, sessions: map[string]*nativePlaybackSession{}, leases: map[string]*nativeFrameLease{},
+	}
 }
 
 func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcError) {
@@ -132,7 +152,7 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 		if asset == nil {
 			return nil, notFound("asset", assetID)
 		}
-		return decodeRGBA(asset, time, true, 0, 0)
+		return r.decodeRGBA(asset, time, true, 0, 0, frameTransport(params))
 	case "createPlaybackSession":
 		timeline, ok := params["timeline"].(map[string]any)
 		if !ok {
@@ -141,7 +161,7 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 		id := r.identifier("session")
 		session := &nativePlaybackSession{
 			id: id, timeline: timeline, paths: stringMap(timeline["assetPaths"]),
-			assetIDs: map[string]string{}, state: "paused", time: 0, forceSeek: true,
+			assetIDs: map[string]string{}, state: "paused", time: 0, forceSeek: true, transport: frameTransport(params),
 		}
 		r.sessions[id] = session
 		return session.result(), nil
@@ -199,6 +219,10 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 			r.disposeSession(session)
 			delete(r.sessions, id)
 		}
+		if lease := r.leases[id]; lease != nil {
+			r.releaseLease(lease)
+			delete(r.leases, id)
+		}
 		return map[string]any{}, nil
 	case "shutdown":
 		return map[string]any{}, nil
@@ -213,8 +237,12 @@ func (r *libavRuntime) Close() {
 	for _, asset := range r.assets {
 		asset.close()
 	}
+	for _, lease := range r.leases {
+		r.releaseLease(lease)
+	}
 	r.assets = map[string]*nativeAsset{}
 	r.sessions = map[string]*nativePlaybackSession{}
+	r.leases = map[string]*nativeFrameLease{}
 }
 
 func (r *libavRuntime) renderFrame(session *nativePlaybackSession) (any, *rpcError) {
@@ -232,7 +260,7 @@ func (r *libavRuntime) renderFrame(session *nativePlaybackSession) (any, *rpcErr
 	}
 	sourceTime := sourceTimeForClip(clip, session.time)
 	width, height := previewFrameSize(session.timeline)
-	frame, decodeErr := decodeRGBA(asset, sourceTime, session.forceSeek, width, height)
+	frame, decodeErr := r.decodeRGBA(asset, sourceTime, session.forceSeek, width, height, session.transport)
 	if decodeErr != nil {
 		return nil, decodeErr
 	}
@@ -366,7 +394,7 @@ func (r *libavRuntime) probeFor(path string, format *C.AVFormatContext) map[stri
 	return map[string]any{"path": path, "format": C.GoString(C.media_format_name(format)), "duration": metadata["duration"], "bitRate": int64(C.media_format_bitrate(format)), "streams": streams, "assetMetadata": metadata}
 }
 
-func decodeRGBA(asset *nativeAsset, time float64, forceSeek bool, outputWidth, outputHeight int) (any, *rpcError) {
+func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bool, outputWidth, outputHeight int, transport string) (any, *rpcError) {
 	stream := C.media_stream(asset.format, C.int(asset.videoStream))
 	numerator := float64(C.media_stream_timebase_num(stream))
 	denominator := float64(C.media_stream_timebase_den(stream))
@@ -410,7 +438,7 @@ func decodeRGBA(asset *nativeAsset, time float64, forceSeek bool, outputWidth, o
 				C.av_frame_unref(frame)
 				continue
 			}
-			result, convertErr := rgbaFrame(frame, numerator, denominator, outputWidth, outputHeight)
+			result, convertErr := r.rgbaFrame(frame, numerator, denominator, outputWidth, outputHeight, transport)
 			if convertErr == nil {
 				asset.hasDecoded = true
 				asset.lastPTS = int64(pts)
@@ -440,7 +468,7 @@ func decodeRGBA(asset *nativeAsset, time float64, forceSeek bool, outputWidth, o
 	return nil, &rpcError{Code: "FRAME_NOT_FOUND", Message: "No decoded video frame exists at or after the requested time."}
 }
 
-func rgbaFrame(input *C.AVFrame, numerator, denominator float64, outputWidth, outputHeight int) (any, *rpcError) {
+func (r *libavRuntime) rgbaFrame(input *C.AVFrame, numerator, denominator float64, outputWidth, outputHeight int, transport string) (any, *rpcError) {
 	width, height := C.media_frame_width(input), C.media_frame_height(input)
 	if outputWidth <= 0 || outputHeight <= 0 {
 		outputWidth, outputHeight = int(width), int(height)
@@ -464,15 +492,67 @@ func rgbaFrame(input *C.AVFrame, numerator, denominator float64, outputWidth, ou
 	}
 	stride := C.media_frame_linesize0(output)
 	byteLength := int(stride * scaledHeight)
-	bytes := C.GoBytes(unsafe.Pointer(C.media_frame_data0(output)), C.int(byteLength))
 	pts := C.media_frame_pts(input)
+	data := map[string]any{}
+	if transport == "shared-memory" {
+		lease, leaseErr := r.createFrameLease(unsafe.Pointer(C.media_frame_data0(output)), byteLength)
+		if leaseErr != nil {
+			return nil, leaseErr
+		}
+		data = map[string]any{
+			"kind": "shared-memory", "name": lease.name, "byteLength": byteLength, "leaseId": lease.id,
+		}
+	} else {
+		bytes := C.GoBytes(unsafe.Pointer(C.media_frame_data0(output)), C.int(byteLength))
+		data = map[string]any{
+			"kind": "inline", "encoding": "base64", "data": base64.StdEncoding.EncodeToString(bytes), "byteLength": byteLength,
+		}
+	}
 	return map[string]any{
 		"format": "rgba", "width": int(scaledWidth), "height": int(scaledHeight), "stride": int(stride),
 		"planes": []any{map[string]any{"offset": 0, "byteLength": byteLength, "stride": int(stride)}},
 		"pts":    int64(pts), "timebase": map[string]any{"numerator": numerator, "denominator": denominator},
 		"duration": 0, "colorSpace": "unknown", "opacity": 1, "hasAlpha": true,
-		"data": map[string]any{"kind": "inline", "encoding": "base64", "data": base64.StdEncoding.EncodeToString(bytes), "byteLength": byteLength},
+		"data": data,
 	}, nil
+}
+
+func (r *libavRuntime) createFrameLease(source unsafe.Pointer, byteLength int) (*nativeFrameLease, *rpcError) {
+	if byteLength <= 0 {
+		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Cannot allocate an empty native preview frame lease."}
+	}
+	leaseFile, err := os.CreateTemp("", fmt.Sprintf("storyboardai-frame-%d-*", os.Getpid()))
+	if err != nil {
+		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Unable to create the native preview memory-mapped frame lease."}
+	}
+	name := leaseFile.Name()
+	if err := leaseFile.Chmod(0600); err != nil {
+		leaseFile.Close()
+		os.Remove(name)
+		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Unable to secure the native preview memory-mapped frame lease."}
+	}
+	if err := leaseFile.Truncate(int64(byteLength)); err != nil {
+		leaseFile.Close()
+		os.Remove(name)
+		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Unable to size the native preview memory-mapped frame lease."}
+	}
+	mapped := C.media_shared_map(C.int(leaseFile.Fd()), C.size_t(byteLength))
+	if C.media_shared_map_failed(mapped) != 0 {
+		leaseFile.Close()
+		os.Remove(name)
+		return nil, &rpcError{Code: "SHARED_MEMORY_FAILED", Message: "Unable to map the native preview shared-memory lease."}
+	}
+	C.media_shared_copy(mapped, source, C.size_t(byteLength))
+	C.media_shared_unmap(mapped, C.size_t(byteLength))
+	leaseFile.Close()
+	id := r.identifier("lease")
+	lease := &nativeFrameLease{id: id, name: name}
+	r.leases[id] = lease
+	return lease, nil
+}
+
+func (r *libavRuntime) releaseLease(lease *nativeFrameLease) {
+	_ = os.Remove(lease.name)
 }
 
 func (asset *nativeAsset) close() {
@@ -520,6 +600,12 @@ func stringMap(value any) map[string]string {
 		}
 	}
 	return result
+}
+func frameTransport(params map[string]any) string {
+	if transport, ok := params["frameTransport"].(string); ok && transport == "shared-memory" {
+		return "shared-memory"
+	}
+	return "inline"
 }
 func activeVideoClip(project map[string]any, timelineTime float64) (map[string]any, *rpcError) {
 	timeline, ok := project["timeline"].(map[string]any)

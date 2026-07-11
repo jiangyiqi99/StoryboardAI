@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
 import { app } from "electron";
+import { loadSharedMemoryBridge } from "./sharedMemoryBridge";
 import type { NativeMediaRuntime } from "@shared/native-media-runtime";
 import type {
   NativeEncodeResult,
@@ -54,6 +55,8 @@ interface PendingRequest {
   reject: (reason: Error) => void;
 }
 
+type FrameTransport = "inline" | "shared-memory";
+
 export class NativeMediaRuntimeUnavailableError extends Error {
   constructor(message: string) {
     super(message);
@@ -73,6 +76,7 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
   private stdoutBuffer = "";
   private readonly pending = new Map<number, PendingRequest>();
   private readonly logListeners = new Set<(event: NativeMediaLogEvent) => void>();
+  private readonly sharedMemoryBridge = loadSharedMemoryBridge();
 
   onLog(listener: (event: NativeMediaLogEvent) => void): () => void {
     this.logListeners.add(listener);
@@ -87,14 +91,18 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
     return this.invoke("probe", { path });
   }
 
-  decodeFrame(assetId: string, time: number): Promise<NativeVideoFrame> {
-    return this.invoke("decodeFrame", { assetId, time });
+  async decodeFrame(assetId: string, time: number): Promise<NativeVideoFrame> {
+    return this.invoke("decodeFrame", {
+      assetId,
+      time,
+      frameTransport: this.frameTransport
+    });
   }
 
   createPlaybackSession(
     timeline: NativeTimelineProject
   ): Promise<NativePlaybackSession> {
-    return this.invoke("createPlaybackSession", { timeline });
+    return this.invoke("createPlaybackSession", { timeline, frameTransport: this.frameTransport });
   }
 
   seek(sessionId: string, time: number): Promise<NativePlaybackSession> {
@@ -109,8 +117,11 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
     return this.invoke("pause", { sessionId });
   }
 
-  renderFrame(sessionId: string, timelineTime: number): Promise<NativeVideoFrame> {
-    return this.invoke("renderFrame", { sessionId, timelineTime });
+  async renderFrame(sessionId: string, timelineTime: number): Promise<NativeVideoFrame> {
+    return this.invoke("renderFrame", {
+      sessionId,
+      timelineTime
+    });
   }
 
   encodeTimeline(
@@ -161,6 +172,10 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
         reject(error);
       });
     });
+  }
+
+  private get frameTransport(): FrameTransport {
+    return this.sharedMemoryBridge ? "shared-memory" : "inline";
   }
 
   private ensureStarted(): Promise<void> {

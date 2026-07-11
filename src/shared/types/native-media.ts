@@ -39,9 +39,10 @@ export type NativeBufferTransport =
     }
   | {
       kind: "shared-memory";
+      /** Memory-mapped file name; only the preload bridge opens it. */
       name: string;
       byteLength: number;
-      /** Opaque lease; it must be released with `dispose` when no longer used. */
+      /** Opaque sidecar lease; the preload bridge releases it after mapping. */
       leaseId: string;
     };
 
