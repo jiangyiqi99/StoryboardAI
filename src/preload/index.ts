@@ -40,8 +40,6 @@ export const desktopApi: AivDesktopApi = {
       invoke(IPC_CHANNELS.MEDIA_EXTRACT_PREVIEW_FRAME, request),
     exportTimelineClips: (request) =>
       invoke(IPC_CHANNELS.MEDIA_EXPORT_TIMELINE_CLIPS, request),
-    renderTimeline: (request) =>
-      invoke(IPC_CHANNELS.MEDIA_RENDER_TIMELINE, request),
     getPathForFile: (file) => webUtils.getPathForFile(file)
   },
   nativeMedia: {

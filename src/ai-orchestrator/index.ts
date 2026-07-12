@@ -106,7 +106,5 @@ const mapRoutingStatus = (
   }
 };
 
-export * from "./providers/MockVideoProvider";
-export * from "./providers/providerRegistry";
 export * from "./workflows/replaceRange";
 export * from "./workflows/storyboardToTimeline";

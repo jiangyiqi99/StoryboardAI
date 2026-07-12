@@ -29,7 +29,6 @@ const createUnavailableDesktopApi = (): AivDesktopApi => {
       extractFrame: rejectDesktopUnavailable,
       extractPreviewFrame: rejectDesktopUnavailable,
       exportTimelineClips: rejectDesktopUnavailable,
-      renderTimeline: rejectDesktopUnavailable,
       getPathForFile: () => {
         throw new Error(DESKTOP_FILE_ACCESS_ERROR);
       }

@@ -145,12 +145,6 @@ export interface MediaPreviewFrame {
   time: number;
 }
 
-export interface MediaRenderTimelineRequest {
-  project: Project;
-  outputPath: string;
-  range?: TimelineRange;
-}
-
 export interface NativeMediaOpenAssetRequest {
   path: string;
 }
@@ -350,10 +344,6 @@ export interface IpcInvokeMap {
   "media:exportTimelineClips": {
     request: MediaExportTimelineClipsRequest;
     response: MediaExportTimelineClipsResponse;
-  };
-  "media:renderTimeline": {
-    request: MediaRenderTimelineRequest;
-    response: string;
   };
   "nativeMedia:openAsset": {
     request: NativeMediaOpenAssetRequest;

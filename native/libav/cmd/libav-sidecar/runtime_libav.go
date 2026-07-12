@@ -717,6 +717,14 @@ func (r *libavRuntime) exportRGBA(session *nativePlaybackSession, time float64, 
 	} else if frameDuration := assetFrameDuration(asset); frameDuration > 0 {
 		sourceIn := numberOr(clip["sourceIn"], 0)
 		sourceOut := numberOr(clip["sourceOut"], sourceIn)
+		// Project metadata and the container's final decodable PTS can differ by
+		// one or more frames (especially for generated or variable-frame-rate
+		// media). Never ask the decoder for a frame beyond the real video stream.
+		if mediaDuration := assetVideoDuration(asset); mediaDuration > sourceIn {
+			if sourceOut <= sourceIn || mediaDuration < sourceOut {
+				sourceOut = mediaDuration
+			}
+		}
 		if sourceOut > sourceIn {
 			sourceTime = math.Min(sourceTime, math.Max(sourceIn, sourceOut-frameDuration))
 		}
@@ -730,6 +738,12 @@ func (r *libavRuntime) exportRGBA(session *nativePlaybackSession, time float64, 
 	forceSeek := session.exportFrame == nil || session.exportClipID != clipID || session.exportAssetID != assetID
 	frame, decodeErr := r.decodeRGBARaw(asset, sourceTime, forceSeek, width, height)
 	if decodeErr != nil {
+		// CFR export may request a timestamp between the final decoded frame and
+		// the container duration. Holding the last frame is the correct visual
+		// result for the remainder of the clip and avoids failing the whole export.
+		if decodeErr.Code == "FRAME_NOT_FOUND" && session.exportFrame != nil && session.exportClipID == clipID && session.exportAssetID == assetID {
+			return session.exportFrame.bytes, nil
+		}
 		return nil, decodeErr
 	}
 	if len(frame.bytes) < width*height*4 || frame.stride != width*4 {
@@ -747,6 +761,17 @@ func assetFrameDuration(asset *nativeAsset) float64 {
 		return 0
 	}
 	return float64(denominator) / float64(numerator)
+}
+
+func assetVideoDuration(asset *nativeAsset) float64 {
+	stream := C.media_stream(asset.format, C.int(asset.videoStream))
+	if duration := seconds(C.media_stream_duration(stream), stream); duration > 0 {
+		return duration
+	}
+	if duration := float64(C.media_format_duration(asset.format)) / float64(C.AV_TIME_BASE); duration > 0 {
+		return duration
+	}
+	return 0
 }
 
 func timelineAsset(project map[string]any, assetID string) map[string]any {

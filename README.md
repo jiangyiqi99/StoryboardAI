@@ -19,12 +19,13 @@ OpenCut 只作为公开设计参考：当前 OpenCut 主仓库描述其目标为
 ```bash
 npm run dev
 npm run build
-npm run dist:mac
-npm run dist:win
-npm run dist:linux
+./build --macarm64
+./build --macx64
+./build --win64
+./build --linux
 ```
 
-`npm run build` 只生成 Electron/Vite 运行产物到 `out/`。`dist:*` 命令会先构建，再通过 electron-builder 生成安装包，输出到 `release/`。
+`npm run build` 只生成 Electron/Vite 运行产物到 `out/`。`./build` 会先构建本机架构的 libav sidecar，再通过 electron-builder 生成安装包，输出到 `release/`。它不支持交叉编译：请在对应操作系统和 CPU 架构上运行相应命令。
 
 跨平台发布建议在对应系统或 CI runner 上分别打包：macOS 用 macOS runner，Windows 用 Windows runner，Linux 用 Linux runner。macOS 公证和 Windows 代码签名需要额外配置证书；未配置时只能生成开发/本地测试用安装包。应用图标可后续补充到 electron-builder 支持的 `build/icon.icns`、`build/icon.ico`、`build/icon.png`。
 

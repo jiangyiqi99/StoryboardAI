@@ -12,7 +12,6 @@ export const IPC_CHANNELS = {
   MEDIA_EXTRACT_FRAME: "media:extractFrame",
   MEDIA_EXTRACT_PREVIEW_FRAME: "media:extractPreviewFrame",
   MEDIA_EXPORT_TIMELINE_CLIPS: "media:exportTimelineClips",
-  MEDIA_RENDER_TIMELINE: "media:renderTimeline",
   NATIVE_MEDIA_OPEN_ASSET: "nativeMedia:openAsset",
   NATIVE_MEDIA_PROBE: "nativeMedia:probe",
   NATIVE_MEDIA_DECODE_FRAME: "nativeMedia:decodeFrame",

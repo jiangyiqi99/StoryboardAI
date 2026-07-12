@@ -24,7 +24,7 @@ export class ReplaceRangeWorkflow {
     // 1. Load project and resolve selected clips from request.range + request.trackId.
     // 2. Ask FrameEngine to extract first and last boundary frames.
     // 3. Submit generation through ApiRouter.generateVideo({ mode: "replace-range" }).
-    // 4. Normalize provider output through RenderEngine.normalize.
+    // 4. Normalize provider output through the active native media pipeline.
     // 5. Register the generated output as a new Asset.
     // 6. Create a REPLACE_RANGE command.
     // 7. Split original clips into before/replacement/after without changing source media.

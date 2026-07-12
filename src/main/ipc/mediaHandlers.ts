@@ -20,7 +20,6 @@ import type {
   MediaImportFilesRequest,
   MediaExtractFrameRequest,
   MediaProbeRequest,
-  MediaRenderTimelineRequest,
   MediaSelectFilesRequest
 } from "@shared/ipc/contracts";
 import {
@@ -143,11 +142,6 @@ export const registerMediaHandlers = (services: AppServices): void => {
       exportTimelineClips(request)
   );
 
-  ipcMain.handle(
-    IPC_CHANNELS.MEDIA_RENDER_TIMELINE,
-    (_event, request: MediaRenderTimelineRequest) =>
-      services.mediaEngine.render.renderTimeline(request)
-  );
 };
 
 async function importMediaFiles(

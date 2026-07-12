@@ -12,7 +12,6 @@ import type {
   MediaImportFilesRequest,
   MediaProbeRequest,
   MediaPreviewFrame,
-  MediaRenderTimelineRequest,
   MediaSelectFilesRequest,
   NativeMediaCreatePlaybackSessionRequest,
   NativeMediaDecodeFrameRequest,
@@ -89,7 +88,6 @@ export interface AivDesktopApi {
     exportTimelineClips(
       request: MediaExportTimelineClipsRequest
     ): Promise<MediaExportTimelineClipsResponse>;
-    renderTimeline(request: MediaRenderTimelineRequest): Promise<string>;
     getPathForFile(file: File): string;
   };
   /**

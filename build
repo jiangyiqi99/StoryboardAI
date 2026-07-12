@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: ./build --win64 | --macarm64 | --macx64 | --linux
+
+Builds the Electron application and its libav sidecar for the current platform.
+Cross-compilation is intentionally unsupported: run each command on the matching
+operating system and CPU architecture.
+EOF
+}
+
+fail() {
+  printf 'build: %s\n' "$1" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+[[ $# -eq 1 ]] || { usage >&2; exit 2; }
+
+host_os="$(uname -s)"
+host_arch="$(uname -m)"
+target="$1"
+
+case "$target" in
+  --win64)
+    [[ "$host_os" == MINGW* || "$host_os" == MSYS* || "$host_os" == CYGWIN* ]] ||
+      fail "--win64 must run in a Windows MSYS2/Git Bash environment"
+    electron_args=(--win --x64)
+    ;;
+  --macarm64)
+    [[ "$host_os" == "Darwin" && "$host_arch" == "arm64" ]] ||
+      fail "--macarm64 must run on an Apple Silicon macOS host"
+    electron_args=(--mac --arm64)
+    ;;
+  --macx64)
+    [[ "$host_os" == "Darwin" && "$host_arch" == "x86_64" ]] ||
+      fail "--macx64 must run on an Intel macOS host"
+    electron_args=(--mac --x64)
+    ;;
+  --linux)
+    [[ "$host_os" == "Linux" && "$host_arch" == "x86_64" ]] ||
+      fail "--linux currently targets x64 and must run on an x86_64 Linux host"
+    electron_args=(--linux --x64)
+    ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+require_command node
+require_command npm
+require_command go
+require_command pkg-config
+[[ -x node_modules/.bin/electron-builder ]] ||
+  fail "dependencies are missing; run npm ci first"
+
+npm run native:libav
+npm run build
+node_modules/.bin/electron-builder "${electron_args[@]}"
