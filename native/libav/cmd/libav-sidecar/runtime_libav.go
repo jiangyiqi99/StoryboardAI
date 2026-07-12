@@ -14,6 +14,7 @@ package main
 #include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
 #include <libavutil/version.h>
+#include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 
@@ -27,6 +28,8 @@ static int media_stream_sample_rate(AVStream *stream) { return stream->codecpar-
 static int media_copy_parameters(AVCodecContext *codec, AVStream *stream) { return avcodec_parameters_to_context(codec, stream->codecpar); }
 static int media_stream_timebase_num(AVStream *stream) { return stream->time_base.num; }
 static int media_stream_timebase_den(AVStream *stream) { return stream->time_base.den; }
+static int media_stream_frame_rate_num(AVFormatContext *format, AVStream *stream) { return av_guess_frame_rate(format, stream, NULL).num; }
+static int media_stream_frame_rate_den(AVFormatContext *format, AVStream *stream) { return av_guess_frame_rate(format, stream, NULL).den; }
 static int64_t media_stream_duration(AVStream *stream) { return stream->duration; }
 static int media_stream_count(AVFormatContext *ctx) { return ctx->nb_streams; }
 static const char* media_format_name(AVFormatContext *ctx) { return ctx->iformat ? ctx->iformat->name : ""; }
@@ -135,6 +138,67 @@ static const char* media_error_string(int errnum) {
 }
 static int media_error_again(void) { return AVERROR(EAGAIN); }
 static int media_error_eof(void) { return AVERROR_EOF; }
+static int media_output_open(AVFormatContext **output, const char *path) { return avformat_alloc_output_context2(output, NULL, NULL, path); }
+static int media_output_needs_file(AVFormatContext *output) { return !(output->oformat->flags & AVFMT_NOFILE); }
+static int media_output_open_file(AVFormatContext *output, const char *path) { return avio_open(&output->pb, path, AVIO_FLAG_WRITE); }
+static int media_output_close_file(AVFormatContext *output) { return avio_closep(&output->pb); }
+static AVStream* media_output_add_stream(AVFormatContext *output, const AVCodec *codec) { return avformat_new_stream(output, codec); }
+static const AVCodec* media_find_video_encoder(int kind) {
+  if (kind == 0) return avcodec_find_encoder(AV_CODEC_ID_H264);
+  return avcodec_find_encoder(AV_CODEC_ID_HEVC);
+}
+static int media_encoder_pixel_format(void) { return AV_PIX_FMT_YUV420P; }
+static const AVCodec* media_find_audio_encoder(void) { return avcodec_find_encoder(AV_CODEC_ID_AAC); }
+static void media_codec_configure_video(AVCodecContext *codec, int width, int height, int pix_fmt, int bitrate, int fps_num, int fps_den) {
+  codec->width = width; codec->height = height; codec->pix_fmt = pix_fmt; codec->bit_rate = bitrate;
+  codec->time_base = (AVRational){fps_den, fps_num}; codec->framerate = (AVRational){fps_num, fps_den};
+  codec->gop_size = (int)(2.0 * fps_num / fps_den + 0.5); codec->max_b_frames = 0;
+}
+static void media_codec_set_global_header(AVCodecContext *codec) { codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER; }
+static int media_output_global_header(AVFormatContext *output) { return output->oformat->flags & AVFMT_GLOBALHEADER; }
+static void media_frame_set_pts(AVFrame *frame, int64_t pts) { frame->pts = pts; }
+static int media_allocate_video_frame(AVFrame *frame, int width, int height, int pix_fmt) { frame->format = pix_fmt; frame->width = width; frame->height = height; return av_frame_get_buffer(frame, 32); }
+static int media_frame_writable(AVFrame *frame) { return av_frame_make_writable(frame); }
+static int media_codec_configure_audio(AVCodecContext *codec, int sample_rate, int channels, int bitrate) {
+  int supports_fltp = 0;
+  if (codec->codec->sample_fmts) {
+    for (const enum AVSampleFormat *format = codec->codec->sample_fmts; *format != AV_SAMPLE_FMT_NONE; format++) {
+      if (*format == AV_SAMPLE_FMT_FLTP) { supports_fltp = 1; break; }
+    }
+  }
+  if (!supports_fltp) return AVERROR(EINVAL);
+  codec->sample_fmt = AV_SAMPLE_FMT_FLTP; codec->sample_rate = sample_rate; codec->bit_rate = bitrate;
+  codec->time_base = (AVRational){1, sample_rate};
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+  av_channel_layout_default(&codec->ch_layout, channels);
+#else
+  codec->channel_layout = av_get_default_channel_layout(channels); codec->channels = channels;
+#endif
+  return 0;
+}
+static int media_codec_frame_size(AVCodecContext *codec) { return codec->frame_size; }
+static int media_allocate_audio_encode_frame(AVFrame *frame, int samples, int sample_rate, int channels) {
+  frame->format = AV_SAMPLE_FMT_FLTP; frame->sample_rate = sample_rate; frame->nb_samples = samples;
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+  av_channel_layout_default(&frame->ch_layout, channels);
+#else
+  frame->channel_layout = av_get_default_channel_layout(channels); frame->channels = channels;
+#endif
+  return av_frame_get_buffer(frame, 0);
+}
+static void media_fill_audio_fltp(AVFrame *frame, const int16_t *samples, int frames, int channels) {
+  for (int channel = 0; channel < channels; channel++) {
+    float *output = (float *)frame->data[channel];
+    for (int index = 0; index < frames; index++) output[index] = samples[index * channels + channel] / 32768.0f;
+  }
+}
+static int media_scale_rgba_to_yuv(struct SwsContext *sws, const uint8_t *data, int stride, AVFrame *output, int height) {
+  const uint8_t *input_data[4] = { data, NULL, NULL, NULL }; int input_lines[4] = { stride, 0, 0, 0 };
+  return sws_scale(sws, input_data, input_lines, 0, height, output->data, output->linesize);
+}
+static int media_packet_rescale_and_write(AVFormatContext *output, AVCodecContext *codec, AVStream *stream, AVPacket *packet) {
+  av_packet_rescale_ts(packet, codec->time_base, stream->time_base); packet->stream_index = stream->index; return av_interleaved_write_frame(output, packet);
+}
 */
 import "C"
 
@@ -142,6 +206,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"os"
 	"sync"
 	"unsafe"
 )
@@ -165,6 +230,9 @@ type nativePlaybackSession struct {
 	time           float64
 	forceSeek      bool
 	audioForceSeek bool
+	exportClipID   string
+	exportAssetID  string
+	exportFrame    *decodedRGBAFrame
 }
 
 type nativeAsset struct {
@@ -175,6 +243,13 @@ type nativeAsset struct {
 	videoStream int
 	hasDecoded  bool
 	lastPTS     int64
+}
+
+type decodedRGBAFrame struct {
+	bytes                  []byte
+	width, height, stride  int
+	pts                    int64
+	numerator, denominator float64
 }
 
 // Audio owns a separate demuxer and codec context from video. Reading packets
@@ -304,7 +379,19 @@ func (r *libavRuntime) Call(method string, params map[string]any) (any, *rpcErro
 		}
 		return r.renderAudio(session, math.Max(0, time), duration)
 	case "encodeTimeline":
-		return nil, &rpcError{Code: "TIMELINE_ENCODER_NOT_READY", Message: "Timeline encoding is not implemented in the initial decode sidecar."}
+		project, ok := params["project"].(map[string]any)
+		if !ok {
+			return nil, invalid("project is required")
+		}
+		outputPath, err := stringParam(params, "outputPath")
+		if err != nil {
+			return nil, err
+		}
+		settings, ok := params["settings"].(map[string]any)
+		if !ok {
+			return nil, invalid("settings is required")
+		}
+		return r.encodeTimeline(project, outputPath, settings)
 	case "dispose":
 		id, err := stringParam(params, "targetId")
 		if err != nil {
@@ -363,6 +450,433 @@ func (r *libavRuntime) renderFrame(session *nativePlaybackSession) (any, *rpcErr
 		frameData["opacity"] = numberOr(clip["opacity"], 1)
 	}
 	return frame, nil
+}
+
+// encodeTimeline is intentionally a CFR renderer: each output timestamp picks
+// one decoded source frame. It never blends adjacent frames or synthesizes
+// intermediate motion. libswscale uses SWS_BILINEAR for every size conversion.
+func (r *libavRuntime) encodeTimeline(project map[string]any, outputPath string, settings map[string]any) (result any, callErr *rpcError) {
+	widthValue, heightValue := numberOr(settings["width"], 0), numberOr(settings["height"], 0)
+	fps, bitRateValue := numberOr(settings["fps"], 0), numberOr(settings["bitRate"], 0)
+	if widthValue < 2 || heightValue < 2 || widthValue > 16384 || heightValue > 16384 || widthValue*heightValue > 134217728 || math.Trunc(widthValue) != widthValue || math.Trunc(heightValue) != heightValue || int(widthValue)%2 != 0 || int(heightValue)%2 != 0 || fps < 1 || fps > 240 || bitRateValue < 1 || bitRateValue > 2000000000 {
+		return nil, invalid("width, height, fps, and bitRate must be valid positive values (dimensions must be even)")
+	}
+	width, height, bitRate := int(widthValue), int(heightValue), int(bitRateValue)
+	codecKind, codecName := encoderKind(settings["codec"])
+	if codecKind < 0 {
+		return nil, invalid("unsupported video codec")
+	}
+	duration := timelineDuration(project)
+	if duration <= 0 {
+		return nil, &rpcError{Code: "NO_VIDEO_TO_ENCODE", Message: "The timeline has no video duration."}
+	}
+
+	cOutputPath := C.CString(outputPath)
+	defer C.free(unsafe.Pointer(cOutputPath))
+	outputFileOpened := false
+	defer func() {
+		if callErr != nil && outputFileOpened {
+			_ = os.Remove(outputPath)
+		}
+	}()
+	var output *C.AVFormatContext
+	if code := C.media_output_open(&output, cOutputPath); code < 0 || output == nil {
+		return nil, libavError("avformat_alloc_output_context2", code)
+	}
+	defer C.avformat_free_context(output)
+	encoder := C.media_find_video_encoder(C.int(codecKind))
+	if encoder == nil {
+		return nil, &rpcError{Code: "ENCODER_NOT_FOUND", Message: "No libav encoder is available for " + codecName}
+	}
+	codec := C.avcodec_alloc_context3(encoder)
+	if codec == nil {
+		return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "Unable to allocate video encoder."}
+	}
+	defer C.avcodec_free_context(&codec)
+	pixelFormat := C.media_encoder_pixel_format()
+	fpsNumerator, fpsDenominator := frameRateRational(fps)
+	C.media_codec_configure_video(codec, C.int(width), C.int(height), pixelFormat, C.int(bitRate), C.int(fpsNumerator), C.int(fpsDenominator))
+	if C.media_output_global_header(output) != 0 {
+		C.media_codec_set_global_header(codec)
+	}
+	if preset, ok := settings["preset"].(string); ok {
+		cPreset := C.CString(map[string]string{"faster": "veryfast", "balanced": "medium", "better": "slow"}[preset])
+		cKey := C.CString("preset")
+		C.av_opt_set(codec.priv_data, cKey, cPreset, 0)
+		C.free(unsafe.Pointer(cKey))
+		C.free(unsafe.Pointer(cPreset))
+	}
+	if code := C.avcodec_open2(codec, encoder, nil); code < 0 {
+		return nil, libavError("avcodec_open2(encoder)", code)
+	}
+	stream := C.media_output_add_stream(output, encoder)
+	if stream == nil {
+		return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "Unable to allocate output stream."}
+	}
+	if code := C.avcodec_parameters_from_context(stream.codecpar, codec); code < 0 {
+		return nil, libavError("avcodec_parameters_from_context", code)
+	}
+
+	var audioCodec *C.AVCodecContext
+	var audioStream *C.AVStream
+	var audioFrame *C.AVFrame
+	var audioPacket *C.AVPacket
+	audioSampleRate := previewAudioSampleRate(project)
+	audioChannels := 2
+	if timelineHasAudio(project) {
+		audioEncoder := C.media_find_audio_encoder()
+		if audioEncoder == nil {
+			return nil, &rpcError{Code: "AUDIO_ENCODER_NOT_FOUND", Message: "No AAC encoder is available in libav."}
+		}
+		audioCodec = C.avcodec_alloc_context3(audioEncoder)
+		if audioCodec == nil {
+			return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "Unable to allocate audio encoder."}
+		}
+		defer C.avcodec_free_context(&audioCodec)
+		if code := C.media_codec_configure_audio(audioCodec, C.int(audioSampleRate), C.int(audioChannels), C.int(192000)); code < 0 {
+			return nil, libavError("configure AAC encoder", code)
+		}
+		if C.media_output_global_header(output) != 0 {
+			C.media_codec_set_global_header(audioCodec)
+		}
+		if code := C.avcodec_open2(audioCodec, audioEncoder, nil); code < 0 {
+			return nil, libavError("avcodec_open2(audio encoder)", code)
+		}
+		audioStream = C.media_output_add_stream(output, audioEncoder)
+		if audioStream == nil {
+			return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "Unable to allocate output audio stream."}
+		}
+		if code := C.avcodec_parameters_from_context(audioStream.codecpar, audioCodec); code < 0 {
+			return nil, libavError("avcodec_parameters_from_context(audio)", code)
+		}
+	}
+	if C.media_output_needs_file(output) != 0 {
+		if code := C.media_output_open_file(output, cOutputPath); code < 0 {
+			return nil, libavError("avio_open", code)
+		}
+		outputFileOpened = true
+		defer C.media_output_close_file(output)
+	}
+	if code := C.avformat_write_header(output, nil); code < 0 {
+		return nil, libavError("avformat_write_header", code)
+	}
+
+	frame := C.av_frame_alloc()
+	packet := C.av_packet_alloc()
+	if frame == nil || packet == nil {
+		if frame != nil {
+			C.av_frame_free(&frame)
+		}
+		if packet != nil {
+			C.av_packet_free(&packet)
+		}
+		return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "Unable to allocate output frame or packet."}
+	}
+	defer C.av_frame_free(&frame)
+	defer C.av_packet_free(&packet)
+	if code := C.media_allocate_video_frame(frame, C.int(width), C.int(height), pixelFormat); code < 0 {
+		return nil, libavError("av_frame_get_buffer(output)", code)
+	}
+	sws := C.sws_getContext(C.int(width), C.int(height), C.AV_PIX_FMT_RGBA, C.int(width), C.int(height), C.enum_AVPixelFormat(pixelFormat), C.SWS_BILINEAR, nil, nil, nil)
+	if sws == nil {
+		return nil, &rpcError{Code: "SWS_CONTEXT_FAILED", Message: "Unable to create bilinear export scaler."}
+	}
+	defer C.sws_freeContext(sws)
+	if audioCodec != nil {
+		audioFrame = C.av_frame_alloc()
+		audioPacket = C.av_packet_alloc()
+		if audioFrame == nil || audioPacket == nil {
+			if audioFrame != nil {
+				C.av_frame_free(&audioFrame)
+			}
+			if audioPacket != nil {
+				C.av_packet_free(&audioPacket)
+			}
+			return nil, &rpcError{Code: "ALLOCATION_FAILED", Message: "Unable to allocate output audio frame or packet."}
+		}
+		defer C.av_frame_free(&audioFrame)
+		defer C.av_packet_free(&audioPacket)
+		if code := C.media_allocate_audio_encode_frame(audioFrame, C.int(C.media_codec_frame_size(audioCodec)), C.int(audioSampleRate), C.int(audioChannels)); code < 0 {
+			return nil, libavError("av_frame_get_buffer(output audio)", code)
+		}
+	}
+
+	session := &nativePlaybackSession{timeline: project, paths: stringMap(project["assetPaths"]), assetIDs: map[string]string{}, audioAssets: map[string]*nativeAudioAsset{}, forceSeek: true, audioForceSeek: true}
+	defer r.disposeSession(session)
+	frameCount := int(math.Ceil(duration * fps))
+	audioPTS := int64(0)
+	for index := 0; index < frameCount; index++ {
+		time := float64(index) / fps
+		rgba, decodeErr := r.exportRGBA(session, time, width, height)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if code := C.media_frame_writable(frame); code < 0 {
+			return nil, libavError("av_frame_make_writable", code)
+		}
+		if len(rgba) == 0 {
+			rgba = make([]byte, width*height*4)
+		}
+		if C.media_scale_rgba_to_yuv(sws, (*C.uint8_t)(unsafe.Pointer(&rgba[0])), C.int(width*4), frame, C.int(height)) <= 0 {
+			return nil, &rpcError{Code: "SWS_SCALE_FAILED", Message: "Bilinear export scaling failed."}
+		}
+		C.media_frame_set_pts(frame, C.int64_t(index))
+		if code := C.avcodec_send_frame(codec, frame); code < 0 {
+			return nil, libavError("avcodec_send_frame", code)
+		}
+		if writeErr := writeEncodedPackets(output, codec, stream, packet); writeErr != nil {
+			return nil, writeErr
+		}
+		if audioCodec != nil {
+			targetAudioPTS := int64(math.Ceil(math.Min(duration, float64(index+1)/fps) * float64(audioSampleRate)))
+			for audioPTS < targetAudioPTS {
+				if audioErr := r.encodeAudioFrame(session, output, audioCodec, audioStream, audioFrame, audioPacket, audioPTS, audioSampleRate, audioChannels); audioErr != nil {
+					return nil, audioErr
+				}
+				audioPTS += int64(C.media_codec_frame_size(audioCodec))
+			}
+		}
+	}
+	if code := C.avcodec_send_frame(codec, nil); code < 0 {
+		return nil, libavError("avcodec_send_frame(flush)", code)
+	}
+	if writeErr := writeEncodedPackets(output, codec, stream, packet); writeErr != nil {
+		return nil, writeErr
+	}
+	if audioCodec != nil {
+		finalAudioPTS := int64(math.Ceil(duration * float64(audioSampleRate)))
+		for audioPTS < finalAudioPTS {
+			if audioErr := r.encodeAudioFrame(session, output, audioCodec, audioStream, audioFrame, audioPacket, audioPTS, audioSampleRate, audioChannels); audioErr != nil {
+				return nil, audioErr
+			}
+			audioPTS += int64(C.media_codec_frame_size(audioCodec))
+		}
+		if code := C.avcodec_send_frame(audioCodec, nil); code < 0 {
+			return nil, libavError("avcodec_send_frame(audio flush)", code)
+		}
+		if writeErr := writeEncodedPackets(output, audioCodec, audioStream, audioPacket); writeErr != nil {
+			return nil, writeErr
+		}
+	}
+	if code := C.av_write_trailer(output); code < 0 {
+		return nil, libavError("av_write_trailer", code)
+	}
+	return map[string]any{"outputPath": outputPath, "duration": duration}, nil
+}
+
+func (r *libavRuntime) encodeAudioFrame(session *nativePlaybackSession, output *C.AVFormatContext, codec *C.AVCodecContext, stream *C.AVStream, frame *C.AVFrame, packet *C.AVPacket, pts int64, sampleRate, channels int) *rpcError {
+	frameSize := int(C.media_codec_frame_size(codec))
+	value, renderErr := r.renderAudio(session, float64(pts)/float64(sampleRate), float64(frameSize)/float64(sampleRate))
+	if renderErr != nil {
+		return renderErr
+	}
+	audio, ok := value.(map[string]any)
+	if !ok {
+		return &rpcError{Code: "AUDIO_FORMAT_ERROR", Message: "Mixer returned an invalid audio buffer."}
+	}
+	transport, ok := audio["data"].(map[string]any)
+	if !ok {
+		return &rpcError{Code: "AUDIO_FORMAT_ERROR", Message: "Mixer returned no audio transport."}
+	}
+	encoded, _ := transport["data"].(string)
+	bytes, decodeErr := base64.StdEncoding.DecodeString(encoded)
+	if decodeErr != nil || len(bytes) < frameSize*channels*2 {
+		return &rpcError{Code: "AUDIO_FORMAT_ERROR", Message: "Mixer returned a truncated audio buffer."}
+	}
+	if code := C.media_frame_writable(frame); code < 0 {
+		return libavError("av_frame_make_writable(audio)", code)
+	}
+	C.media_fill_audio_fltp(frame, (*C.int16_t)(unsafe.Pointer(&bytes[0])), C.int(frameSize), C.int(channels))
+	C.media_frame_set_pts(frame, C.int64_t(pts))
+	if code := C.avcodec_send_frame(codec, frame); code < 0 {
+		return libavError("avcodec_send_frame(audio)", code)
+	}
+	return writeEncodedPackets(output, codec, stream, packet)
+}
+
+func (r *libavRuntime) exportRGBA(session *nativePlaybackSession, time float64, width, height int) ([]byte, *rpcError) {
+	clip, err := activeVideoClip(session.timeline, time)
+	if err != nil {
+		if err.Code == "NO_VIDEO_AT_TIME" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	assetID, _ := clip["assetId"].(string)
+	clipID, _ := clip["id"].(string)
+	if red, green, blue, ok := solidColorForAsset(session.timeline, assetID); ok {
+		return solidRGBA(width, height, red, green, blue), nil
+	}
+	asset, assetErr := r.assetForSession(session, assetID)
+	if assetErr != nil {
+		return nil, assetErr
+	}
+	sourceTime := sourceTimeForClip(clip, time)
+	if timelineAssetKind(session.timeline, assetID) == "image" || timelineAssetKind(session.timeline, assetID) == "generated-image" {
+		sourceTime = numberOr(clip["sourceIn"], 0)
+	} else if frameDuration := assetFrameDuration(asset); frameDuration > 0 {
+		sourceIn := numberOr(clip["sourceIn"], 0)
+		sourceOut := numberOr(clip["sourceOut"], sourceIn)
+		if sourceOut > sourceIn {
+			sourceTime = math.Min(sourceTime, math.Max(sourceIn, sourceOut-frameDuration))
+		}
+	}
+	if session.exportFrame != nil && session.exportClipID == clipID && session.exportAssetID == assetID {
+		frameTime := float64(session.exportFrame.pts) * session.exportFrame.numerator / session.exportFrame.denominator
+		if sourceTime <= frameTime+0.0000001 {
+			return session.exportFrame.bytes, nil
+		}
+	}
+	forceSeek := session.exportFrame == nil || session.exportClipID != clipID || session.exportAssetID != assetID
+	frame, decodeErr := r.decodeRGBARaw(asset, sourceTime, forceSeek, width, height)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	if len(frame.bytes) < width*height*4 || frame.stride != width*4 {
+		return nil, &rpcError{Code: "FRAME_FORMAT_ERROR", Message: "Decoded frame is shorter than its declared dimensions."}
+	}
+	session.exportClipID, session.exportAssetID, session.exportFrame = clipID, assetID, frame
+	return frame.bytes, nil
+}
+
+func assetFrameDuration(asset *nativeAsset) float64 {
+	stream := C.media_stream(asset.format, C.int(asset.videoStream))
+	numerator := int(C.media_stream_frame_rate_num(asset.format, stream))
+	denominator := int(C.media_stream_frame_rate_den(asset.format, stream))
+	if numerator <= 0 || denominator <= 0 {
+		return 0
+	}
+	return float64(denominator) / float64(numerator)
+}
+
+func timelineAsset(project map[string]any, assetID string) map[string]any {
+	assets, ok := project["assets"].([]any)
+	if !ok {
+		return nil
+	}
+	for _, value := range assets {
+		asset, ok := value.(map[string]any)
+		if ok && asset["id"] == assetID {
+			return asset
+		}
+	}
+	return nil
+}
+
+func timelineAssetKind(project map[string]any, assetID string) string {
+	kind, _ := timelineAsset(project, assetID)["kind"].(string)
+	return kind
+}
+
+func solidColorForAsset(project map[string]any, assetID string) (byte, byte, byte, bool) {
+	asset := timelineAsset(project, assetID)
+	metadata, ok := asset["metadata"].(map[string]any)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	probe, ok := metadata["probe"].(map[string]any)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	editor, ok := probe["storyboardAiEditor"].(map[string]any)
+	if !ok || editor["variant"] != "solid-color" {
+		return 0, 0, 0, false
+	}
+	color, ok := editor["solidColor"].(map[string]any)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	red, redOK := color["r"].(float64)
+	green, greenOK := color["g"].(float64)
+	blue, blueOK := color["b"].(float64)
+	if !redOK || !greenOK || !blueOK {
+		return 0, 0, 0, false
+	}
+	channel := func(value float64) byte { return byte(math.Round(math.Max(0, math.Min(255, value)))) }
+	return channel(red), channel(green), channel(blue), true
+}
+
+func solidRGBA(width, height int, red, green, blue byte) []byte {
+	frame := make([]byte, width*height*4)
+	for offset := 0; offset < len(frame); offset += 4 {
+		frame[offset], frame[offset+1], frame[offset+2], frame[offset+3] = red, green, blue, 255
+	}
+	return frame
+}
+
+func writeEncodedPackets(output *C.AVFormatContext, codec *C.AVCodecContext, stream *C.AVStream, packet *C.AVPacket) *rpcError {
+	for {
+		code := C.avcodec_receive_packet(codec, packet)
+		if code == C.media_error_again() || code == C.media_error_eof() {
+			return nil
+		}
+		if code < 0 {
+			return libavError("avcodec_receive_packet", code)
+		}
+		writeCode := C.media_packet_rescale_and_write(output, codec, stream, packet)
+		C.av_packet_unref(packet)
+		if writeCode < 0 {
+			return libavError("av_interleaved_write_frame", writeCode)
+		}
+	}
+}
+
+func encoderKind(value any) (int, string) {
+	switch value {
+	case "h264":
+		return 0, "H.264"
+	case "hevc":
+		return 1, "HEVC"
+	default:
+		return -1, ""
+	}
+}
+
+func timelineDuration(project map[string]any) float64 {
+	if timeline, ok := project["timeline"].(map[string]any); ok {
+		return math.Max(0, numberOr(timeline["duration"], 0))
+	}
+	return 0
+}
+
+func timelineHasAudio(project map[string]any) bool {
+	timeline, ok := project["timeline"].(map[string]any)
+	if !ok {
+		return false
+	}
+	tracks, ok := timeline["tracks"].([]any)
+	if !ok {
+		return false
+	}
+	for _, trackValue := range tracks {
+		track, ok := trackValue.(map[string]any)
+		if !ok || track["kind"] != "audio" || boolOr(track["muted"], false) {
+			continue
+		}
+		if clips, ok := track["clips"].([]any); ok && len(clips) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func frameRateRational(fps float64) (int, int) {
+	// Preserve broadcast rates entered as decimals (23.976/29.97/59.94) and
+	// arbitrary user-entered fractional rates to milliframe precision.
+	numerator := int(math.Round(fps * 1000))
+	denominator := 1000
+	divisor := greatestCommonDivisor(numerator, denominator)
+	return numerator / divisor, denominator / divisor
+}
+
+func greatestCommonDivisor(left, right int) int {
+	for right != 0 {
+		left, right = right, left%right
+	}
+	if left < 1 {
+		return 1
+	}
+	return left
 }
 
 func (r *libavRuntime) renderAudio(session *nativePlaybackSession, timelineTime, duration float64) (any, *rpcError) {
@@ -610,6 +1124,23 @@ func (r *libavRuntime) probeFor(path string, format *C.AVFormatContext) map[stri
 }
 
 func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bool, outputWidth, outputHeight int) (any, *rpcError) {
+	frame, err := r.decodeRGBARaw(asset, time, forceSeek, outputWidth, outputHeight)
+	if err != nil {
+		return nil, err
+	}
+	byteLength := len(frame.bytes)
+	return map[string]any{
+		"format": "rgba", "width": frame.width, "height": frame.height, "stride": frame.stride,
+		"planes": []any{map[string]any{"offset": 0, "byteLength": byteLength, "stride": frame.stride}},
+		"pts":    frame.pts, "timebase": map[string]any{"numerator": frame.numerator, "denominator": frame.denominator},
+		"duration": 0, "colorSpace": "unknown", "opacity": 1, "hasAlpha": true,
+		"data": map[string]any{
+			"kind": "inline", "encoding": "base64", "data": base64.StdEncoding.EncodeToString(frame.bytes), "byteLength": byteLength,
+		},
+	}, nil
+}
+
+func (r *libavRuntime) decodeRGBARaw(asset *nativeAsset, time float64, forceSeek bool, outputWidth, outputHeight int) (*decodedRGBAFrame, *rpcError) {
 	stream := C.media_stream(asset.format, C.int(asset.videoStream))
 	numerator := float64(C.media_stream_timebase_num(stream))
 	denominator := float64(C.media_stream_timebase_den(stream))
@@ -645,6 +1176,7 @@ func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bo
 	}
 	defer C.av_packet_free(&packet)
 	defer C.av_frame_free(&frame)
+	draining := false
 	for {
 		code := C.avcodec_receive_frame(asset.videoCodec, frame)
 		if code == 0 {
@@ -653,7 +1185,7 @@ func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bo
 				C.av_frame_unref(frame)
 				continue
 			}
-			result, convertErr := r.rgbaFrame(frame, numerator, denominator, outputWidth, outputHeight)
+			result, convertErr := r.rgbaFrameRaw(frame, numerator, denominator, outputWidth, outputHeight)
 			if convertErr == nil {
 				asset.hasDecoded = true
 				asset.lastPTS = int64(pts)
@@ -668,7 +1200,14 @@ func (r *libavRuntime) decodeRGBA(asset *nativeAsset, time float64, forceSeek bo
 		}
 		code = C.av_read_frame(asset.format, packet)
 		if code < 0 {
-			break
+			if draining {
+				break
+			}
+			if flushCode := C.avcodec_send_packet(asset.videoCodec, nil); flushCode < 0 {
+				return nil, libavError("avcodec_send_packet(flush)", flushCode)
+			}
+			draining = true
+			continue
 		}
 		if C.media_packet_stream_index(packet) != C.int(asset.videoStream) {
 			C.av_packet_unref(packet)
@@ -837,7 +1376,7 @@ func resampleFrameToF32(input *C.AVFrame, sampleRate, channels int) ([]float32, 
 	return values, nil
 }
 
-func (r *libavRuntime) rgbaFrame(input *C.AVFrame, numerator, denominator float64, outputWidth, outputHeight int) (any, *rpcError) {
+func (r *libavRuntime) rgbaFrameRaw(input *C.AVFrame, numerator, denominator float64, outputWidth, outputHeight int) (*decodedRGBAFrame, *rpcError) {
 	width, height := C.media_frame_width(input), C.media_frame_height(input)
 	if outputWidth <= 0 || outputHeight <= 0 {
 		outputWidth, outputHeight = int(width), int(height)
@@ -863,14 +1402,9 @@ func (r *libavRuntime) rgbaFrame(input *C.AVFrame, numerator, denominator float6
 	byteLength := int(stride * scaledHeight)
 	pts := C.media_frame_pts(input)
 	bytes := C.GoBytes(unsafe.Pointer(C.media_frame_data0(output)), C.int(byteLength))
-	return map[string]any{
-		"format": "rgba", "width": int(scaledWidth), "height": int(scaledHeight), "stride": int(stride),
-		"planes": []any{map[string]any{"offset": 0, "byteLength": byteLength, "stride": int(stride)}},
-		"pts":    int64(pts), "timebase": map[string]any{"numerator": numerator, "denominator": denominator},
-		"duration": 0, "colorSpace": "unknown", "opacity": 1, "hasAlpha": true,
-		"data": map[string]any{
-			"kind": "inline", "encoding": "base64", "data": base64.StdEncoding.EncodeToString(bytes), "byteLength": byteLength,
-		},
+	return &decodedRGBAFrame{
+		bytes: bytes, width: int(scaledWidth), height: int(scaledHeight), stride: int(stride),
+		pts: int64(pts), numerator: numerator, denominator: denominator,
 	}, nil
 }
 

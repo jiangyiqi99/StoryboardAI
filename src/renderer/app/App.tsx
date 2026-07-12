@@ -26,6 +26,7 @@ import { StoryScriptPanel } from "../components/story-script";
 import { StoryboardPanel } from "../components/storyboard";
 import { Timeline } from "../components/timeline";
 import { desktopApi } from "../ipc/api";
+import type { NativeEncodeSettings, NativeTimelineProject } from "@shared/types/native-media";
 import {
   EditorProvider,
   type ProjectOperationResult,
@@ -108,8 +109,40 @@ const EditorWorkspace = () => {
   };
 
   const confirmExport = async () => {
-    if (exportSettings.mode !== "sequential-clips") {
-      setIsExportOpen(false);
+    if (exportSettings.mode === "rendered-video") {
+      if (!projectRuntime || !project) {
+        setExportStatus("请先新建或打开项目");
+        return;
+      }
+      const nativeTimeline = createNativeExportTimeline({
+        assets,
+        clips: timelineClips,
+        project
+      });
+      if (!nativeTimeline) {
+        setExportStatus("时间线上没有可导出的视频片段");
+        return;
+      }
+      const settings = parseNativeEncodeSettings(exportSettings);
+      if (!settings) {
+        setExportStatus("请填写有效的分辨率、帧率和码率");
+        return;
+      }
+      try {
+        setIsExporting(true);
+        setExportStatus("正在使用 libav 渲染完整视频…");
+        const outputPath = `${projectRuntime.projectRootPath}/renders/${safeFileName(project.name)}-${formatExportFileTimestamp(new Date())}.mp4`;
+        const result = await desktopApi.nativeMedia.encodeTimeline({
+          project: nativeTimeline,
+          outputPath,
+          settings
+        });
+        setExportStatus(`导出完成：${result.outputPath}`);
+      } catch (error) {
+        setExportStatus(getErrorMessage(error));
+      } finally {
+        setIsExporting(false);
+      }
       return;
     }
 
@@ -321,6 +354,118 @@ function createSequentialClipExportInputs(
     })
     .filter((clip): clip is NonNullable<typeof clip> => Boolean(clip))
     .sort((first, second) => first.timelineStart - second.timelineStart);
+}
+
+function createNativeExportTimeline({
+  assets,
+  clips,
+  project
+}: {
+  assets: ReturnType<typeof useEditor>["assets"];
+  clips: ReturnType<typeof useEditor>["timelineClips"];
+  project: NonNullable<ReturnType<typeof useEditor>["project"]>;
+}): NativeTimelineProject | undefined {
+  const assetPaths = Object.fromEntries(
+    assets
+      .filter((asset) => Boolean(asset.absolutePath))
+      .map((asset) => [asset.id, asset.absolutePath!])
+  );
+  const projectAssetById = new Map(project.assets.map((asset) => [asset.id, asset]));
+  const nativeAssets = assets.map((asset) => {
+    const existing = projectAssetById.get(asset.id);
+    return {
+      ...existing,
+      id: asset.id,
+      kind: existing?.kind ?? asset.kind,
+      origin: existing?.origin ?? (asset.imported ? "imported" as const : "generated" as const),
+      name: asset.name,
+      metadata: {
+        ...(asset.metadata ?? existing?.metadata),
+        duration: asset.durationSec,
+        width: asset.width,
+        height: asset.height,
+        fps: asset.fps,
+        probe: {
+          ...(asset.metadata?.probe ?? existing?.metadata.probe),
+          storyboardAiEditor: {
+            variant: asset.variant,
+            solidColor: asset.solidColor
+          }
+        }
+      },
+      importedAt: asset.importedAt ?? existing?.importedAt ?? new Date().toISOString()
+    };
+  });
+  const toNativeClip = (clip: (typeof clips)[number]) => ({
+    id: clip.id,
+    assetId: clip.assetId,
+    trackId: clip.trackId,
+    sourceIn: clip.sourceIn,
+    sourceOut: clip.sourceOut,
+    timelineStart: clip.timelineStart,
+    timelineEnd: clip.timelineStart + clip.durationSec,
+    speed: 1,
+    opacity: 1
+  });
+  const videoClips = clips
+    .filter((clip) => {
+      const asset = assets.find((candidate) => candidate.id === clip.assetId);
+      return clip.trackId === "video-1" && Boolean(asset) && asset?.kind !== "audio";
+    })
+    .map(toNativeClip);
+  if (videoClips.length === 0) return undefined;
+  const audioTracks = (["source-audio-1", "voiceover-1", "music-1"] as const)
+    .map((trackId, index) => ({
+      id: trackId,
+      kind: "audio" as const,
+      name: trackId,
+      order: index + 1,
+      locked: false,
+      muted: false,
+      visible: true,
+      clips: clips
+        .filter((clip) => clip.trackId === trackId && Boolean(assetPaths[clip.assetId]))
+        .map(toNativeClip)
+    }))
+    .filter((track) => track.clips.length > 0);
+  return {
+    assets: nativeAssets,
+    assetPaths,
+    settings: project.settings,
+    timeline: {
+      ...project.timeline,
+      tracks: [
+        {
+          id: "video-1", kind: "video", name: "Video", order: 0,
+          locked: false, muted: false, visible: true, clips: videoClips
+        },
+        ...audioTracks
+      ],
+      duration: Math.max(...clips.map((clip) => clip.timelineStart + clip.durationSec))
+    }
+  };
+}
+
+function parseNativeEncodeSettings(settings: ExportSettings): NativeEncodeSettings | undefined {
+  const resolution = settings.resolution === "自定义" ? settings.customResolution : settings.resolution;
+  const match = /^(\d+)\s*x\s*(\d+)$/i.exec(resolution.trim());
+  const width = match ? Number(match[1]) : undefined;
+  const height = match ? Number(match[2]) : undefined;
+  const fps = Number(settings.fps);
+  const bitrateMatch = /^\s*(\d+(?:\.\d+)?)\s*(k|m|g)?(?:bps)?\s*$/i.exec(settings.bitrate);
+  const multiplier = ({ k: 1_000, m: 1_000_000, g: 1_000_000_000 } as const)[bitrateMatch?.[2]?.toLowerCase() as "k" | "m" | "g"] ?? 1;
+  const bitRate = bitrateMatch ? Number(bitrateMatch[1]) * multiplier : NaN;
+  const codec = ({ H264: "h264", HEVC: "hevc" } as const)[settings.codec];
+  if (!width || !height || width % 2 || height % 2 || width > 16384 || height > 16384 || width * height > 134_217_728 || !Number.isFinite(fps) || fps <= 0 || fps > 240 || !Number.isFinite(bitRate) || bitRate <= 0 || bitRate > 2_000_000_000) return undefined;
+  return { width, height, fps, bitRate, codec, preset: settings.preset };
+}
+
+function safeFileName(name: string): string {
+  return name.replace(/[<>:"/\\|?*]+/g, "-").trim() || "export";
+}
+
+function formatExportFileTimestamp(date: Date): string {
+  return date.toISOString().replace(/\D/g, "");
 }
 
 function countPrimaryVideoTimelineClips(

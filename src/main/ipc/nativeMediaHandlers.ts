@@ -52,7 +52,7 @@ export const registerNativeMediaHandlers = (services: AppServices): void => {
   ipcMain.handle(
     IPC_CHANNELS.NATIVE_MEDIA_ENCODE_TIMELINE,
     (_event, request: NativeMediaEncodeTimelineRequest) =>
-      runtime.encodeTimeline(request.project, request.outputPath)
+      runtime.encodeTimeline(request.project, request.outputPath, request.settings)
   );
   ipcMain.handle(IPC_CHANNELS.NATIVE_MEDIA_DISPOSE, (_event, request: NativeMediaDisposeRequest) =>
     runtime.dispose(request.targetId)

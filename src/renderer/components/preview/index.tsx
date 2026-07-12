@@ -32,6 +32,9 @@ type NativePreviewState =
 
 const FRAME_CACHE_CAPACITY = 3;
 const PREFETCH_LEAD_FRAMES = 1;
+const TRANSITION_PREFETCH_EPSILON_SEC = 0.001;
+const TRANSIENT_STATUS_DELAY_MS = 100;
+const PLAYBACK_FAILURE_TOLERANCE_FRAMES = 3;
 const AUDIO_CHUNK_DURATION_SEC = 0.5;
 const AUDIO_BUFFER_LEAD_SEC = 1.1;
 
@@ -64,7 +67,10 @@ export const Preview = () => {
   const queuedRenderRef = useRef<QueuedRenderRequest>();
   const pendingFrameKeysRef = useRef(new Set<number>());
   const frameCacheRef = useRef(new Map<number, NativeVideoFrame>());
+  const transitionFrameCacheRef = useRef(new Map<number, NativeVideoFrame>());
+  const transitionPrefetchPendingRef = useRef(new Set<number>());
   const lastDisplayedFrameKeyRef = useRef<number>();
+  const consecutivePlaybackFailuresRef = useRef(0);
   const activeFrameKeyRef = useRef(0);
   const hasFrameRef = useRef(false);
   const playheadRef = useRef(playheadSec);
@@ -93,8 +99,10 @@ export const Preview = () => {
   ) => Promise<void>>(
     async () => undefined
   );
+  const preloadNextClipRef = useRef<(time: number) => void>(() => undefined);
   const [previewState, setPreviewState] = useState<NativePreviewState>("idle");
   const [previewError, setPreviewError] = useState<string>();
+  const [showTransientStatus, setShowTransientStatus] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [previewTime, setPreviewTime] = useState(playheadSec);
 
@@ -160,6 +168,24 @@ export const Preview = () => {
     setPreviewTime(playheadSec);
     previewClock.seek(playheadSec);
   }, [isPlaying, playheadSec]);
+
+  useEffect(() => {
+    const isTransient = previewState === "loading" || previewState === "decode-pending";
+    if (!isTransient) {
+      setShowTransientStatus(false);
+      return;
+    }
+
+    // A prepared transition frame normally arrives within one paint. Avoid
+    // flashing a loading label for that single-frame hand-off, while keeping
+    // feedback for a decode that is genuinely taking noticeable time.
+    setShowTransientStatus(false);
+    const timer = window.setTimeout(
+      () => setShowTransientStatus(true),
+      TRANSIENT_STATUS_DELAY_MS
+    );
+    return () => window.clearTimeout(timer);
+  }, [previewState]);
 
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -318,15 +344,23 @@ export const Preview = () => {
   const displayCachedFrame = useCallback(
     (frameKey: number): boolean => {
       let selectedKey: number | undefined;
+      let selectedFrame: NativeVideoFrame | undefined;
       for (const cachedKey of frameCacheRef.current.keys()) {
         if (cachedKey <= frameKey && (selectedKey === undefined || cachedKey > selectedKey)) {
           selectedKey = cachedKey;
+          selectedFrame = frameCacheRef.current.get(cachedKey);
+        }
+      }
+      for (const [cachedKey, cachedFrame] of transitionFrameCacheRef.current) {
+        if (cachedKey <= frameKey && (selectedKey === undefined || cachedKey > selectedKey)) {
+          selectedKey = cachedKey;
+          selectedFrame = cachedFrame;
         }
       }
       if (selectedKey === undefined || selectedKey === lastDisplayedFrameKeyRef.current) {
         return false;
       }
-      const frame = frameCacheRef.current.get(selectedKey);
+      const frame = selectedFrame;
       if (!frame) return false;
       drawFrame(frame);
       lastDisplayedFrameKeyRef.current = selectedKey;
@@ -336,6 +370,55 @@ export const Preview = () => {
     },
     [drawFrame]
   );
+
+  const preloadNextClip = useCallback(
+    (timelineTime: number) => {
+      const sessionId = sessionIdRef.current;
+      if (!sessionId || !hasTimelineClipsRef.current) return;
+      const nextClip = timelineClips
+        .filter(
+          (clip) =>
+            clip.trackId === "video-1" &&
+            clip.timelineStart > timelineTime + TRANSITION_PREFETCH_EPSILON_SEC
+        )
+        .sort((first, second) => first.timelineStart - second.timelineStart)[0];
+      if (!nextClip) return;
+      const asset = assets.find((candidate) => candidate.id === nextClip.assetId);
+      if (asset?.kind !== "video" || !asset.absolutePath) return;
+      const frameKey = frameKeyForTime(nextClip.timelineStart);
+      if (
+        transitionFrameCacheRef.current.has(frameKey) ||
+        transitionPrefetchPendingRef.current.has(frameKey)
+      ) {
+        return;
+      }
+
+      const generation = sessionGenerationRef.current;
+      transitionPrefetchPendingRef.current.add(frameKey);
+      // Decode and retain the next clip's first frame while the current clip is
+      // still playing. Each asset has its own native decoder, so this both
+      // opens/warms the next decoder and gives the renderer an immediate frame
+      // to display at the edit point.
+      void desktopApi.nativeMedia
+        .renderFrame({ sessionId, timelineTime: nextClip.timelineStart })
+        .then((frame) => {
+          if (
+            generation !== sessionGenerationRef.current ||
+            sessionId !== sessionIdRef.current
+          ) {
+            return;
+          }
+          transitionFrameCacheRef.current.set(frameKey, frame);
+        })
+        .catch(() => {
+          // Normal render remains the fallback if a speculative preload fails.
+        })
+        .finally(() => transitionPrefetchPendingRef.current.delete(frameKey));
+    },
+    [assets, frameKeyForTime, timelineClips]
+  );
+
+  preloadNextClipRef.current = preloadNextClip;
 
   const renderAt = useCallback(
     async (timelineTime: number, seek: boolean, display = true) => {
@@ -408,6 +491,7 @@ export const Preview = () => {
             });
             pendingFrameKeysRef.current.delete(request.frameKey);
             if (generation !== sessionGenerationRef.current) continue;
+            consecutivePlaybackFailuresRef.current = 0;
             const replacedFrame = frameCacheRef.current.get(request.frameKey);
             frameCacheRef.current.set(request.frameKey, frame);
             while (frameCacheRef.current.size > FRAME_CACHE_CAPACITY) {
@@ -440,6 +524,21 @@ export const Preview = () => {
           } catch (error) {
             pendingFrameKeysRef.current.delete(request.frameKey);
             if (generation !== sessionGenerationRef.current) continue;
+            if (previewClock.getSnapshot().isPlaying && hasFrameRef.current) {
+              consecutivePlaybackFailuresRef.current += 1;
+              if (
+                consecutivePlaybackFailuresRef.current <=
+                PLAYBACK_FAILURE_TOLERANCE_FRAMES
+              ) {
+                // A request can briefly land between adjacent clips because
+                // the preview clock and source frame timestamps use different
+                // timebases. Keep the last/preloaded frame and let the next RAF
+                // recover instead of flashing a one-frame decode error.
+                setPreviewState("ready");
+                setPreviewError(undefined);
+                continue;
+              }
+            }
             setPreviewState("decode-failed");
             setPreviewError(formatNativePreviewError(error));
           }
@@ -471,6 +570,9 @@ export const Preview = () => {
     queuedRenderRef.current = undefined;
     pendingFrameKeysRef.current.clear();
     frameCacheRef.current.clear();
+    transitionFrameCacheRef.current.clear();
+    transitionPrefetchPendingRef.current.clear();
+    consecutivePlaybackFailuresRef.current = 0;
     activeFrameKeyRef.current = frameKeyForTime(playheadRef.current);
     hasFrameRef.current = false;
     stopPreviewAudio();
@@ -499,6 +601,7 @@ export const Preview = () => {
         }
         sessionIdRef.current = session.id;
         await renderAtRef.current(playheadRef.current, true);
+        preloadNextClipRef.current(playheadRef.current);
       })
       .catch((error) => {
         if (disposed || generation !== sessionGenerationRef.current) {
@@ -513,6 +616,9 @@ export const Preview = () => {
       queuedRenderRef.current = undefined;
       pendingFrameKeysRef.current.clear();
       frameCacheRef.current.clear();
+      transitionFrameCacheRef.current.clear();
+      transitionPrefetchPendingRef.current.clear();
+      consecutivePlaybackFailuresRef.current = 0;
       hasFrameRef.current = false;
       stopPreviewAudio();
       if (sessionIdRef.current) {
@@ -557,6 +663,13 @@ export const Preview = () => {
         setPreviewTime(nextTimelineTime);
         previewClock.advance(nextTimelineTime);
         displayCachedFrame(frameKey);
+        preloadNextClipRef.current(nextTimelineTime);
+
+        // Once a real frame from the new clip is available, older transition
+        // frames no longer need to remain in renderer memory.
+        for (const cachedKey of transitionFrameCacheRef.current.keys()) {
+          if (cachedKey < frameKey) transitionFrameCacheRef.current.delete(cachedKey);
+        }
 
         if (hasFrameRef.current) {
           const prefetchKey = frameKey + PREFETCH_LEAD_FRAMES;
@@ -621,6 +734,7 @@ export const Preview = () => {
       if (!hasFrameRef.current) setPreviewState("decode-pending");
       setIsPlaying(true);
       void startPreviewAudio(startTime);
+      preloadNextClipRef.current(startTime);
       if (!displayCachedFrame(playbackLastFrameKeyRef.current)) {
         void renderAt(startTime, true);
       }
@@ -643,6 +757,20 @@ export const Preview = () => {
     setIsPlaying(false);
   };
 
+  useEffect(() => {
+    return previewClock.subscribe((snapshot) => {
+      if (snapshot.isPlaying || !isPlaying) return;
+      const sessionId = sessionIdRef.current;
+      if (sessionId) void desktopApi.nativeMedia.pause({ sessionId });
+      stopPreviewAudio();
+      playheadRef.current = snapshot.time;
+      setPreviewTime(snapshot.time);
+      activeFrameKeyRef.current = frameKeyForTime(snapshot.time);
+      setIsPlaying(false);
+      void renderAtRef.current(snapshot.time, true);
+    });
+  }, [frameKeyForTime, isPlaying, stopPreviewAudio]);
+
   const seekBy = (delta: number) => {
     const nextTime = Math.max(0, Math.min(playbackEndSec, previewTime + delta));
     playheadRef.current = nextTime;
@@ -662,6 +790,11 @@ export const Preview = () => {
 
   const showNativeCanvas = hasNativeVideoAtPlayhead;
   const canPlay = Boolean(sessionIdRef.current && nativeTimeline);
+  const shouldShowNativeStatus =
+    previewState !== "ready" &&
+    (previewState !== "loading" && previewState !== "decode-pending"
+      ? true
+      : showTransientStatus);
 
   return (
     <section className="panel preview-panel" data-panel="preview">
@@ -689,7 +822,7 @@ export const Preview = () => {
               ref={canvasRef}
               style={{ opacity: previewState === "ready" ? frameOpacityRef.current : 0 }}
             />
-            {previewState !== "ready" ? (
+            {shouldShowNativeStatus ? (
               <div className={`viewer-native-status is-${previewState}`} role="status">
                 {nativePreviewStatusText(previewState, previewError)}
               </div>

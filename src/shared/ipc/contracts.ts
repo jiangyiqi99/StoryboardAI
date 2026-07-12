@@ -18,6 +18,7 @@ import type { TimelineRange, TrackId } from "../types/timeline";
 import type { StoryScriptDocumentFormat } from "../storyScriptDocuments";
 import type {
   NativeEncodeResult,
+  NativeEncodeSettings,
   NativeAudioBuffer,
   NativeMediaAsset,
   NativeMediaProbe,
@@ -188,6 +189,7 @@ export interface NativeMediaRenderAudioRequest extends NativeMediaSessionRequest
 export interface NativeMediaEncodeTimelineRequest {
   project: NativeTimelineProject;
   outputPath: string;
+  settings: NativeEncodeSettings;
 }
 
 export interface NativeMediaDisposeRequest {

@@ -238,6 +238,17 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         assets,
         projectRootPath
       );
+      // Copying a starter-workspace asset into a newly created project changes
+      // the path that native preview must open. Publish those resolved assets
+      // immediately after the copy finishes instead of waiting for the project
+      // save/open round-trip, otherwise an existing playback session can keep
+      // decoding the original temporary path.
+      if (storedAssets !== assets) {
+        const storedAssetsById = new Map(storedAssets.map((asset) => [asset.id, asset]));
+        setAssets((current) =>
+          current.map((asset) => storedAssetsById.get(asset.id) ?? asset)
+        );
+      }
       const nextProject = editorStateToProject(baseProject, {
         assets: storedAssets,
         timelineClips,
@@ -1857,16 +1868,22 @@ async function ensureImportedAssetsStoredInProject(
     sourcePaths.map((sourcePath, index) => [sourcePath, importedFiles[index]])
   );
 
-  return assets.map((asset) => {
+  let changed = false;
+  const storedAssets = assets.map((asset) => {
     if (!asset.imported || !asset.absolutePath || asset.projectRelativePath) {
       return asset;
     }
 
     const importedFile = importedFilesBySourcePath.get(asset.absolutePath);
-    return importedFile
-      ? updateEditorAssetFromImportedFile(asset, importedFile)
-      : asset;
+    if (!importedFile) {
+      return asset;
+    }
+
+    changed = true;
+    return updateEditorAssetFromImportedFile(asset, importedFile);
   });
+
+  return changed ? storedAssets : assets;
 }
 
 function getErrorMessage(error: unknown): string {

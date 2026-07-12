@@ -6,6 +6,7 @@ import { app } from "electron";
 import type { NativeMediaRuntime } from "@shared/native-media-runtime";
 import type {
   NativeEncodeResult,
+  NativeEncodeSettings,
   NativeAudioBuffer,
   NativeMediaAsset,
   NativeMediaLogEvent,
@@ -129,9 +130,10 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
 
   encodeTimeline(
     project: NativeTimelineProject,
-    outputPath: string
+    outputPath: string,
+    settings: NativeEncodeSettings
   ): Promise<NativeEncodeResult> {
-    return this.invoke("encodeTimeline", { project, outputPath });
+    return this.invoke("encodeTimeline", { project, outputPath, settings });
   }
 
   async dispose(targetId: string): Promise<void> {

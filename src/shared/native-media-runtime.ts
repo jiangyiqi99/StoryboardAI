@@ -1,5 +1,6 @@
 import type {
   NativeEncodeResult,
+  NativeEncodeSettings,
   NativeAudioBuffer,
   NativeMediaAsset,
   NativeMediaProbe,
@@ -28,7 +29,8 @@ export interface NativeMediaRuntime {
   ): Promise<NativeAudioBuffer>;
   encodeTimeline(
     project: NativeTimelineProject,
-    outputPath: string
+    outputPath: string,
+    settings: NativeEncodeSettings
   ): Promise<NativeEncodeResult>;
   /** Releases an opened asset or playback session. */
   dispose(targetId: string): Promise<void>;

@@ -117,6 +117,18 @@ export interface NativeEncodeResult {
   duration: number;
 }
 
+export type NativeVideoCodec = "h264" | "hevc";
+
+/** Settings for the final libav render. Bitrate is expressed in bits per second. */
+export interface NativeEncodeSettings {
+  width: number;
+  height: number;
+  fps: number;
+  bitRate: number;
+  codec: NativeVideoCodec;
+  preset: "faster" | "balanced" | "better";
+}
+
 export interface NativeMediaRuntimeError {
   code: string;
   operation: string;

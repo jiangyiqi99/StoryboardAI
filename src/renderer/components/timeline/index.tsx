@@ -113,8 +113,8 @@ export const Timeline = () => {
   }, [pixelsPerSecond]);
 
   useEffect(() => {
-    const updatePlayhead = ({ isPlaying, time }: ReturnType<typeof previewClock.getSnapshot>) => {
-      if (!isPlaying || !playheadIndicatorRef.current) {
+    const updatePlayhead = ({ time }: ReturnType<typeof previewClock.getSnapshot>) => {
+      if (!playheadIndicatorRef.current) {
         return;
       }
       playheadIndicatorRef.current.style.left = `${time * pixelsPerSecondRef.current}px`;
@@ -334,7 +334,10 @@ export const Timeline = () => {
   const beginScrubbing = (event: PointerEvent<HTMLElement>) => {
     const nextTime = getTimeFromClientX(event.clientX);
     event.stopPropagation();
-    setPlayhead(nextTime);
+    // Scrubbing owns the preview clock. Pausing before publishing the new
+    // playhead prevents the playback RAF from immediately overwriting it.
+    previewClock.pause(nextTime);
+    setPlayhead(nextTime, { markProjectDirty: false });
     setIsScrubbing(true);
     canvasRef.current?.setPointerCapture(event.pointerId);
   };
@@ -408,7 +411,8 @@ export const Timeline = () => {
     }));
 
     if (isScrubbing) {
-      setPlayhead(nextTime);
+      previewClock.seek(nextTime);
+      setPlayhead(nextTime, { markProjectDirty: false });
     }
   };
 

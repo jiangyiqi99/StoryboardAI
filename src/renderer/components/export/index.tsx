@@ -1,13 +1,15 @@
 import { Download, X } from "lucide-react";
 
 export type ExportPreset = "faster" | "balanced" | "better";
-export type ExportCodec = "H264" | "HEVC" | "Prores" | "ProresHQ" | "ProresLT";
+export type ExportCodec = "H264" | "HEVC";
 export type ExportMode = "rendered-video" | "sequential-clips";
 
 export interface ExportSettings {
   mode: ExportMode;
   bitrate: string;
   resolution: string;
+  customResolution: string;
+  fps: string;
   preset: ExportPreset;
   codec: ExportCodec;
 }
@@ -26,18 +28,20 @@ const modeOptions: Array<{ label: string; value: ExportMode }> = [
   { label: "成片导出", value: "rendered-video" },
   { label: "按顺序导出单个片段", value: "sequential-clips" }
 ];
-const resolutionOptions = ["原始分辨率", "3840 x 2160", "1920 x 1080", "1280 x 720"];
+const resolutionOptions = ["3840 x 2160", "1920 x 1080", "1280 x 720", "自定义"];
 const presetOptions: Array<{ label: string; value: ExportPreset }> = [
   { label: "更快", value: "faster" },
   { label: "平衡", value: "balanced" },
   { label: "更好", value: "better" }
 ];
-const codecOptions: ExportCodec[] = ["H264", "HEVC", "Prores", "ProresHQ", "ProresLT"];
+const codecOptions: ExportCodec[] = ["H264", "HEVC"];
 
 export const defaultExportSettings: ExportSettings = {
   mode: "rendered-video",
   bitrate: "16 Mbps",
   resolution: "1920 x 1080",
+  customResolution: "1920 x 1080",
+  fps: "24",
   preset: "balanced",
   codec: "H264"
 };
@@ -140,6 +144,42 @@ export const ExportDialog = ({
                     </option>
                   ))}
                 </select>
+              </label>
+
+              {settings.resolution === "自定义" ? (
+                <label className="export-field">
+                  <span>自定义分辨率</span>
+                  <input
+                    inputMode="text"
+                    onChange={(event) =>
+                      onChange({
+                        ...settings,
+                        customResolution: event.target.value
+                      })
+                    }
+                    placeholder="例如 1920 x 1080"
+                    type="text"
+                    value={settings.customResolution}
+                  />
+                </label>
+              ) : null}
+
+              <label className="export-field">
+                <span>帧率</span>
+                <input
+                  inputMode="decimal"
+                  min="1"
+                  step="any"
+                  onChange={(event) =>
+                    onChange({
+                      ...settings,
+                      fps: event.target.value
+                    })
+                  }
+                  placeholder="例如 24"
+                  type="number"
+                  value={settings.fps}
+                />
               </label>
 
               <fieldset className="export-fieldset">
