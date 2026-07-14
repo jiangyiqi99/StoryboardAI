@@ -3,17 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "AI-native local non-linear video editor scaffold built with Electron, React, TypeScript, and Vite.",
+  "description": "An AI-generated GPLv3 desktop video editor scaffold with AI workflows, built with Electron, React, TypeScript, and FFmpeg.",
   "author": "StoryboardAI",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "tsc --noEmit && electron-vite build",
-    "dist": "npm run native:libav && npm run build && electron-builder",
-    "dist:macarm64": "npm run native:libav && npm run build && electron-builder --mac --arm64",
-    "dist:macx64": "npm run native:libav && npm run build && electron-builder --mac --x64",
-    "dist:win": "npm run native:libav && npm run build && electron-builder --win",
-    "dist:linux": "npm run native:libav && npm run build && electron-builder --linux",
+    "dist": "npm run native:libav && npm run build && electron-builder --publish never",
+    "dist:macarm64": "npm run native:libav && npm run build && electron-builder --mac --arm64 --publish never",
+    "dist:macx64": "npm run native:libav && npm run build && electron-builder --mac --x64 --publish never",
+    "dist:win": "npm run native:libav && npm run build && electron-builder --win --publish never",
+    "dist:linux": "npm run native:libav && npm run build && electron-builder --linux --publish never",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "native:libav": "node native/libav/scripts/build.mjs"
@@ -61,8 +61,7 @@
     "linux": {
       "category": "AudioVideo",
       "target": [
-        "AppImage",
-        "deb"
+        "AppImage"
       ]
     },
     "nsis": {

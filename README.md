@@ -1,8 +1,12 @@
 # Storyboard AI Editor
 
+[中文](README.md) | [English](README_EN.md)
+
 AI-native 本地非线性视频剪辑软件架构骨架。当前阶段只搭建 Electron + React + TypeScript + Vite 项目结构、核心模块占位、类型定义、IPC 调用流程和项目文件说明，不实现真实 UI 细节、真实模型调用、复杂 FFmpeg 命令、完整剪辑算法或云端服务。
 
 本项目以 [GNU General Public License v3.0（GPLv3）](LICENSE) 发布。你可以运行、修改、分发软件及用它制作的内容；分发本软件或修改版时，须同时遵守 GPLv3 的源码提供和同许可证要求。视频输出通常不属于 GPL 覆盖范围。
+
+> **维护提示：** 本项目的代码由 AI 生成，当前实现可能存在难以预见的架构、兼容性和维护成本问题。请谨慎尝试提交 Pull Request；如需提交，务必在目标平台和相关功能路径上完成充分测试，并在 PR 中清楚说明测试范围与结果。
 
 ## 设计目标
 

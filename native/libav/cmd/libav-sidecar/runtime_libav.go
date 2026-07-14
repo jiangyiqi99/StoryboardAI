@@ -127,7 +127,7 @@ static int media_resample_to_f32(SwrContext *swr, AVFrame *input, AVFrame *outpu
     swr,
     output->data,
     output->nb_samples,
-    (const uint8_t * const *)input->extended_data,
+    (const uint8_t **)input->extended_data,
     input->nb_samples
   );
 }
@@ -161,11 +161,23 @@ static int media_allocate_video_frame(AVFrame *frame, int width, int height, int
 static int media_frame_writable(AVFrame *frame) { return av_frame_make_writable(frame); }
 static int media_codec_configure_audio(AVCodecContext *codec, int sample_rate, int channels, int bitrate) {
   int supports_fltp = 0;
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
   if (codec->codec->sample_fmts) {
     for (const enum AVSampleFormat *format = codec->codec->sample_fmts; *format != AV_SAMPLE_FMT_NONE; format++) {
       if (*format == AV_SAMPLE_FMT_FLTP) { supports_fltp = 1; break; }
     }
   }
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
   if (!supports_fltp) return AVERROR(EINVAL);
   codec->sample_fmt = AV_SAMPLE_FMT_FLTP; codec->sample_rate = sample_rate; codec->bit_rate = bitrate;
   codec->time_base = (AVRational){1, sample_rate};
