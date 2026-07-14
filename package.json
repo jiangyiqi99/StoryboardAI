@@ -5,6 +5,9 @@
   "type": "module",
   "description": "An AI-generated GPLv3 desktop video editor scaffold with AI workflows, built with Electron, React, TypeScript, and FFmpeg.",
   "author": "StoryboardAI",
+  "engines": {
+    "node": ">=24"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -75,7 +78,7 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.30",
+    "@types/node": "^24.0.0",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",

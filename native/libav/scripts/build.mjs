@@ -1,10 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { stageRuntimeLibraries } from "./stage-runtime.mjs";
 
 const environment = { ...process.env };
 const outputName = process.platform === "win32" ? "libav-sidecar.exe" : "libav-sidecar";
+const nativeDirectory = fileURLToPath(new URL("..", import.meta.url));
 
 if (process.platform === "darwin" && !canRun("pkg-config", environment)) {
   const brew = spawnSync("brew", ["--prefix", "pkgconf"], {
@@ -21,12 +23,12 @@ if (!canRun("pkg-config", environment)) {
   throw new Error(pkgConfigInstallHint());
 }
 
-rmSync(new URL(`../bin/${outputName}`, import.meta.url), { force: true });
+rmSync(join(nativeDirectory, "bin", outputName), { force: true });
 
 const build = spawnSync(
   "go",
   ["build", "-tags", "libav", "-o", `bin/${outputName}`, "./cmd/libav-sidecar"],
-  { cwd: new URL("..", import.meta.url), stdio: "inherit", env: environment }
+  { cwd: nativeDirectory, stdio: "inherit", env: environment }
 );
 
 if (build.error) {
@@ -37,7 +39,7 @@ if (build.status !== 0) {
 }
 
 stageRuntimeLibraries({
-  sidecarPath: join(new URL("..", import.meta.url).pathname, "bin", outputName)
+  sidecarPath: join(nativeDirectory, "bin", outputName)
 });
 
 function canRun(command, env) {
