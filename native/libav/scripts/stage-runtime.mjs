@@ -16,6 +16,7 @@ export function stageRuntimeLibraries({ sidecarPath }) {
   if (libraries.length === 0) {
     throw new Error("Cannot stage libav runtime: no dynamic FFmpeg libraries were found.");
   }
+  assertRequiredFFmpegLibraries(libraries);
 
   if (process.platform === "darwin") {
     rewriteMacLoadPaths(sidecarPath, copied);
@@ -82,10 +83,20 @@ function linuxDependencies(file) {
 }
 
 function windowsDependencies(file) {
-  return command("ldd", [file])
+  const msysPath = command("cygpath", ["-u", file]).trim();
+  return command("ldd", [msysPath])
     .split("\n")
-    .map((line) => line.match(/=>\s+(\/\S+)/)?.[1])
+    .map((line) => {
+      const path = line.match(/=>\s+(\S+\.dll)\b/i)?.[1]
+        ?? line.trim().match(/^(\S+\.dll)\s/i)?.[1];
+      return path ? windowsNativePath(path) : undefined;
+    })
     .filter(Boolean);
+}
+
+function windowsNativePath(path) {
+  if (/^[a-z]:[\\/]/i.test(path)) return path;
+  return command("cygpath", ["-w", path]).trim();
 }
 
 function shouldBundle(dependency) {
@@ -93,7 +104,11 @@ function shouldBundle(dependency) {
   if (process.platform === "darwin") {
     return !dependency.startsWith("/System/") && !dependency.startsWith("/usr/lib/");
   }
-  if (process.platform === "win32") return dependency.toLowerCase().endsWith(".dll");
+  if (process.platform === "win32") {
+    const normalized = dependency.replaceAll("/", "\\");
+    return normalized.toLowerCase().endsWith(".dll")
+      && !/\\windows\\system32\\/i.test(normalized);
+  }
 
   return !/^(libc|libdl|libm|libpthread|librt|libutil|libgcc_s|libstdc\+\+|ld-linux)/.test(
     basename(dependency)
@@ -124,6 +139,17 @@ function rewriteLinuxRunpaths(sidecarPath, copied) {
 
 function uniqueStagedLibraries(copied) {
   return [...new Map([...copied.values()].map((library) => [library.destination, library])).values()];
+}
+
+function assertRequiredFFmpegLibraries(libraries) {
+  const names = libraries.map(({ destination }) => basename(destination).toLowerCase());
+  const required = ["avformat", "avcodec", "avutil", "swscale", "swresample"];
+  const missing = required.filter((name) => !names.some((library) => library.includes(name)));
+  if (missing.length > 0) {
+    throw new Error(
+      `Cannot stage libav runtime: missing ${missing.join(", ")}. Found: ${names.join(", ")}`
+    );
+  }
 }
 
 function command(binary, args) {
