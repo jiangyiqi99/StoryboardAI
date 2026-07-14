@@ -3,9 +3,13 @@ dist/
 release/
 out/
 .vite/
+native/libav/runtime/
 *.log
 .DS_Store
 .github/
+!.github/
+!.github/workflows/
+!.github/workflows/package.yml
 
 # Local project runtime outputs can be large and are regenerated.
 *.aivproj/cache/**

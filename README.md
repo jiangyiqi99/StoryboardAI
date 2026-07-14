@@ -2,6 +2,8 @@
 
 AI-native 本地非线性视频剪辑软件架构骨架。当前阶段只搭建 Electron + React + TypeScript + Vite 项目结构、核心模块占位、类型定义、IPC 调用流程和项目文件说明，不实现真实 UI 细节、真实模型调用、复杂 FFmpeg 命令、完整剪辑算法或云端服务。
 
+本项目以 [GNU General Public License v3.0（GPLv3）](LICENSE) 发布。你可以运行、修改、分发软件及用它制作的内容；分发本软件或修改版时，须同时遵守 GPLv3 的源码提供和同许可证要求。视频输出通常不属于 GPL 覆盖范围。
+
 ## 设计目标
 
 - 桌面端优先：跨平台 Electron App，而不是传统 SaaS 管理后台。
@@ -25,9 +27,9 @@ npm run build
 ./build --linux
 ```
 
-`npm run build` 只生成 Electron/Vite 运行产物到 `out/`。`./build` 会先构建本机架构的 libav sidecar，再通过 electron-builder 生成安装包，输出到 `release/`。它不支持交叉编译：请在对应操作系统和 CPU 架构上运行相应命令。
+`npm run build` 只生成 Electron/Vite 运行产物到 `out/`。`npm run dist:*` 会先构建本机架构的 libav sidecar、收集其 FFmpeg 动态库及依赖到 `native/libav/runtime/`，再通过 electron-builder 生成安装包，输出到 `release/`。该运行时目录会随安装包带入应用资源，因此目标机器无需另行安装 FFmpeg。
 
-跨平台发布建议在对应系统或 CI runner 上分别打包：macOS 用 macOS runner，Windows 用 Windows runner，Linux 用 Linux runner。macOS 公证和 Windows 代码签名需要额外配置证书；未配置时只能生成开发/本地测试用安装包。应用图标可后续补充到 electron-builder 支持的 `build/icon.icns`、`build/icon.ico`、`build/icon.png`。
+跨平台发布在 GitHub Actions 中分别由 macOS arm64、macOS x64、Windows x64、Linux x64 runner 构建。每次推送都会生成四组 Actions artifacts；推送 `v*` 标签时会自动创建 GitHub Release 并上传它们。macOS 公证和 Windows 代码签名需要额外配置证书；未配置时生成未签名安装包。应用图标可后续补充到 electron-builder 支持的 `build/icon.icns`、`build/icon.ico`、`build/icon.png`。
 
 ## 目录结构
 
@@ -191,6 +193,8 @@ npm run native:libav
 
 详见 [native/libav/README.md](native/libav/README.md)。在二进制尚未构建时调用
 `nativeMedia` 会报明确的运行时不可用错误，应用原有媒体能力不受影响。
+
+发布 GPL 构建时，必须同时提供与所打包 FFmpeg 动态库精确对应的 FFmpeg 源码、配置参数及本项目源码。GitHub Release 应附上这些对应源码，或在相同下载位置提供明确、免费的源码链接。
 
 ### 5. AI Orchestrator
 

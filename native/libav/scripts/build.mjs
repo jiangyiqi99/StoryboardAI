@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { stageRuntimeLibraries } from "./stage-runtime.mjs";
 
 const environment = { ...process.env };
 const outputName = process.platform === "win32" ? "libav-sidecar.exe" : "libav-sidecar";
@@ -20,6 +21,8 @@ if (!canRun("pkg-config", environment)) {
   throw new Error(pkgConfigInstallHint());
 }
 
+rmSync(new URL(`../bin/${outputName}`, import.meta.url), { force: true });
+
 const build = spawnSync(
   "go",
   ["build", "-tags", "libav", "-o", `bin/${outputName}`, "./cmd/libav-sidecar"],
@@ -29,7 +32,13 @@ const build = spawnSync(
 if (build.error) {
   throw build.error;
 }
-process.exit(build.status ?? 1);
+if (build.status !== 0) {
+  process.exit(build.status ?? 1);
+}
+
+stageRuntimeLibraries({
+  sidecarPath: join(new URL("..", import.meta.url).pathname, "bin", outputName)
+});
 
 function canRun(command, env) {
   const result = spawnSync(command, ["--version"], { stdio: "ignore", env });

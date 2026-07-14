@@ -28,12 +28,17 @@
     },
     "files": [
       "out/**",
-      "package.json"
+      "package.json",
+      "LICENSE"
     ],
     "extraResources": [
       {
         "from": "native/libav/bin",
         "to": "native/libav/bin"
+      },
+      {
+        "from": "native/libav/runtime",
+        "to": "native/libav/runtime"
       }
     ],
     "mac": {

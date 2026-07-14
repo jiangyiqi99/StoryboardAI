@@ -188,9 +188,11 @@ export class GoSidecarNativeMediaRuntime implements NativeMediaRuntime {
 
   private async start(): Promise<void> {
     const sidecarPath = await resolveSidecarPath();
+    const runtimePath = join(dirname(dirname(sidecarPath)), "runtime");
     const child = spawn(sidecarPath, [], {
       stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true
+      windowsHide: true,
+      env: sidecarEnvironment(runtimePath)
     });
     this.process = child;
     child.stdout.setEncoding("utf8");
@@ -299,4 +301,16 @@ async function resolveSidecarPath(): Promise<string> {
 
 function sidecarName(): string {
   return process.platform === "win32" ? "libav-sidecar.exe" : "libav-sidecar";
+}
+
+function sidecarEnvironment(runtimePath: string): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  if (process.platform === "win32") {
+    environment.PATH = [runtimePath, environment.PATH].filter(Boolean).join(";");
+  } else if (process.platform === "linux") {
+    environment.LD_LIBRARY_PATH = [runtimePath, environment.LD_LIBRARY_PATH]
+      .filter(Boolean)
+      .join(":");
+  }
+  return environment;
 }

@@ -25,9 +25,15 @@ MSYS2/Homebrew SDKs are supported.
 
 For Electron development, set `LIBAV_SIDECAR_PATH` to the generated binary or
 leave it at `native/libav/bin/libav-sidecar` (`.exe` on Windows). Production
-packaging copies the binary into app resources. A release build must also stage
-the matching dynamic libav libraries beside it (DLLs on Windows, `.so` files on
-Linux); this repository does not bundle those third-party libraries yet.
+packaging copies the binary into app resources together with its recursively
+resolved FFmpeg runtime dependencies in `native/libav/runtime`. The staging
+script rewrites macOS and Linux library search paths; the Electron main process
+adds the bundled runtime directory to the sidecar environment on Windows and
+Linux.
+
+The FFmpeg packages used by this project are GPL builds. A binary release must
+also provide the exact corresponding FFmpeg source, its build configuration,
+and this project's complete corresponding source under GPLv3.
 
 ## Protocol promises
 
