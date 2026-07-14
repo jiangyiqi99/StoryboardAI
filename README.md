@@ -1,10 +1,10 @@
 # Storyboard AI Editor
 
-[中文](README.md) | [English](README_EN.md)
+[中文] | [English](README_EN.md)
 
 AI-native 本地非线性视频剪辑软件架构骨架。当前阶段只搭建 Electron + React + TypeScript + Vite 项目结构、核心模块占位、类型定义、IPC 调用流程和项目文件说明，不实现真实 UI 细节、真实模型调用、复杂 FFmpeg 命令、完整剪辑算法或云端服务。
 
-本项目以 [GNU General Public License v3.0（GPLv3）](LICENSE) 发布。你可以运行、修改、分发软件及用它制作的内容；分发本软件或修改版时，须同时遵守 GPLv3 的源码提供和同许可证要求。视频输出通常不属于 GPL 覆盖范围。
+本项目以 [GNU General Public License v3.0（GPLv3）](LICENSE) 发布。你可以运行、修改、分发软件及用它制作的内容；分发本软件或修改版时，须同时遵守 GPLv3 的源码提供和同许可证要求。
 
 > **维护提示：** 本项目的代码由 AI 生成，当前实现可能存在难以预见的架构、兼容性和维护成本问题。请谨慎尝试提交 Pull Request；如需提交，务必在目标平台和相关功能路径上完成充分测试，并在 PR 中清楚说明测试范围与结果。
 
@@ -17,8 +17,6 @@ AI-native 本地非线性视频剪辑软件架构骨架。当前阶段只搭建 
 - Native Media Runtime：新增 Go/libav Sidecar 契约，作为下一阶段 native 解码、预览与导出的并行通道；尚未替换既有 Preview 或 FFmpeg 路径。
 - AI-native：分镜生成视频和选区替换是一级工作流，不是附加插件。
 - 非破坏性编辑：Timeline clip 只引用素材，不改写原始视频文件。
-
-OpenCut 只作为公开设计参考：当前 OpenCut 主仓库描述其目标为 web/desktop/mobile 视频编辑器，classic 仓库保留了 timeline、media、preview、project、rendering 等模块边界。本项目不会 fork 或照搬 OpenCut，而是围绕本地 `.aivproj` 和 AI 生成工作流重新组织。参考记录见 [references/opencut-notes.md](references/opencut-notes.md)。
 
 ## 开发与打包
 
@@ -33,7 +31,7 @@ npm run build
 
 `npm run build` 只生成 Electron/Vite 运行产物到 `out/`。`npm run dist:*` 会先构建本机架构的 libav sidecar、收集其 FFmpeg 动态库及依赖到 `native/libav/runtime/`，再通过 electron-builder 生成安装包，输出到 `release/`。该运行时目录会随安装包带入应用资源，因此目标机器无需另行安装 FFmpeg。
 
-跨平台发布在 GitHub Actions 中分别由 macOS arm64、macOS x64、Windows x64、Linux x64 runner 构建。每次推送都会生成四组 Actions artifacts；推送 `v*` 标签时会自动创建 GitHub Release 并上传它们。macOS 公证和 Windows 代码签名需要额外配置证书；未配置时生成未签名安装包。应用图标可后续补充到 electron-builder 支持的 `build/icon.icns`、`build/icon.ico`、`build/icon.png`。
+跨平台发布在 GitHub Actions 中分别由 macOS arm64、macOS x64、Windows x64、Linux x64 runner 构建。每次推送都会生成四组 Actions artifacts。应用图标可后续补充到 electron-builder 支持的 `build/icon.icns`、`build/icon.ico`、`build/icon.png`。
 
 ## 目录结构
 
