@@ -5,6 +5,7 @@ export type AiWorkflowKind = "storyboard-to-video" | "replace-range";
 export type AiGenerationMode =
   | "text-to-video"
   | "image-to-video"
+  | "reference-to-video"
   | "first-frame"
   | "first-last-frame";
 

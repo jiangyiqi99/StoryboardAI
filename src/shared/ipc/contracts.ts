@@ -225,6 +225,7 @@ export interface AiGenerateStoryboardRequest {
   modelId?: string;
   defaultDuration: number;
   aspectRatio: string;
+  generationMode?: "reference-to-video" | "boundary-frames";
 }
 
 export type AiStoryboardProgressStage =
@@ -273,6 +274,7 @@ export interface AiStoryboardSegmentInput {
   id: string;
   text: string;
   durationSec: number;
+  referenceAssetIds?: string[];
 }
 
 export interface AiReplaceRangeRequest {

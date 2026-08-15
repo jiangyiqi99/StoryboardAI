@@ -56,6 +56,15 @@ export interface EditorStoryBeat {
   id: string;
   description: string;
   durationSec: number;
+  generationMode: "reference-to-video" | "boundary-frames";
+  referenceAssetIds?: string[];
+}
+
+export interface EditorStoryReferenceAsset {
+  id: string;
+  assetId: string;
+  kind: "image" | "video";
+  label: string;
 }
 
 export type StoryScriptImportMode = "overwrite" | "append";

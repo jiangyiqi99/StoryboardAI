@@ -19,6 +19,14 @@ import type {
   GoogleVeoConfig,
   VolcengineSeedanceConfig
 } from "@shared/types/app-config";
+import {
+  DEFAULT_SEEDANCE_MODEL_ID,
+  DEFAULT_VEO_MODEL_ID,
+  normalizeSeedanceModelId,
+  normalizeVeoModelId,
+  SEEDANCE_MODEL_OPTIONS,
+  VEO_MODEL_OPTIONS
+} from "@shared/video-models";
 import { desktopApi } from "../../ipc/api";
 
 type ProviderKind = "seedance" | "veo";
@@ -47,7 +55,6 @@ interface VeoFormState {
   projectId: string;
   location: string;
   textImageModel: string;
-  extensionModel: string;
   defaultSampleCount: string;
   defaultAspectRatio: string;
   defaultResolution: string;
@@ -63,7 +70,7 @@ const providerDefinitions: ProviderDefinition[] = [
     title: "Seedance",
     subtitle: "火山方舟视频生成 API",
     providerId: "volcengine-seedance",
-    modelHint: "文字生成、首帧、首尾帧"
+    modelHint: "文字生成、参考生成、首帧、首尾帧"
   },
   {
     id: "veo",
@@ -400,10 +407,10 @@ const SeedanceFields = ({ form, onChange }: SeedanceFieldsProps) => {
         type="password"
         value={form.apiKey}
       />
-      <ProviderTextField
-        label="Model ID / Endpoint ID"
+      <ProviderSelectField
+        label="Model"
         onChange={(value) => update("reqKey", value)}
-        placeholder="doubao-seedance-2-0-260128"
+        options={SEEDANCE_MODEL_OPTIONS}
         value={form.reqKey}
       />
       <ProviderTextField
@@ -468,17 +475,11 @@ const VeoFields = ({ form, onChange }: VeoFieldsProps) => {
         placeholder="global"
         value={form.location}
       />
-      <ProviderTextField
-        label="Text/Image Model"
+      <ProviderSelectField
+        label="Model"
         onChange={(value) => update("textImageModel", value)}
-        placeholder="veo-3.0-generate-preview"
+        options={VEO_MODEL_OPTIONS}
         value={form.textImageModel}
-      />
-      <ProviderTextField
-        label="Extension Model"
-        onChange={(value) => update("extensionModel", value)}
-        placeholder="可选，后续视频续写使用"
-        value={form.extensionModel}
       />
       <ProviderTextField
         label="Sample Count"
@@ -554,13 +555,41 @@ const ProviderTextField = ({
   );
 };
 
+interface ProviderSelectFieldProps {
+  label: string;
+  value: string;
+  options: readonly { id: string; label: string }[];
+  onChange(value: string): void;
+}
+
+const ProviderSelectField = ({
+  label,
+  value,
+  options,
+  onChange
+}: ProviderSelectFieldProps) => (
+  <label className="export-field">
+    <span>{label}</span>
+    <select
+      onChange={(event) => onChange(event.currentTarget.value)}
+      value={value}
+    >
+      {options.map((option) => (
+        <option key={option.id} value={option.id}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  </label>
+);
+
 const seedanceToForm = (
   config: VolcengineSeedanceConfig | undefined
 ): SeedanceFormState => ({
   alias: config?.alias ?? "",
   apiKey: config?.apiKey ?? "",
   baseUrl: config?.baseUrl ?? "https://ark.cn-beijing.volces.com/api/v3",
-  reqKey: config?.reqKey ?? "doubao-seedance-2-0-260128",
+  reqKey: normalizeSeedanceModelId(config?.reqKey ?? DEFAULT_SEEDANCE_MODEL_ID),
   timeoutMs: stringFromNumber(config?.timeoutMs ?? 60_000),
   pollIntervalMs: stringFromNumber(config?.pollIntervalMs ?? 30_000),
   pollTimeoutMs: stringFromNumber(config?.pollTimeoutMs ?? 600_000)
@@ -571,8 +600,7 @@ const veoToForm = (config: GoogleVeoConfig | undefined): VeoFormState => ({
   apiKey: config?.apiKey ?? "",
   projectId: config?.projectId ?? "",
   location: config?.location ?? "global",
-  textImageModel: config?.textImageModel ?? "veo-3.0-generate-preview",
-  extensionModel: config?.extensionModel ?? "",
+  textImageModel: normalizeVeoModelId(config?.textImageModel ?? DEFAULT_VEO_MODEL_ID),
   defaultSampleCount: stringFromNumber(config?.defaultSampleCount ?? 1),
   defaultAspectRatio: config?.defaultAspectRatio ?? "16:9",
   defaultResolution: config?.defaultResolution ?? "",
@@ -589,7 +617,7 @@ const seedanceFormToConfig = (
   alias: optionalString(form.alias),
   apiKey: optionalString(form.apiKey),
   baseUrl: optionalString(form.baseUrl),
-  reqKey: optionalString(form.reqKey),
+  reqKey: normalizeSeedanceModelId(form.reqKey),
   timeoutMs: optionalNumber(form.timeoutMs),
   pollIntervalMs: optionalNumber(form.pollIntervalMs),
   pollTimeoutMs: optionalNumber(form.pollTimeoutMs)
@@ -619,8 +647,7 @@ const veoFormToConfig = (form: VeoFormState): Partial<GoogleVeoConfig> => ({
   apiKey: optionalString(form.apiKey),
   projectId: optionalString(form.projectId),
   location: optionalString(form.location),
-  textImageModel: optionalString(form.textImageModel),
-  extensionModel: optionalString(form.extensionModel),
+  textImageModel: normalizeVeoModelId(form.textImageModel),
   defaultSampleCount: optionalNumber(form.defaultSampleCount),
   defaultAspectRatio: optionalString(form.defaultAspectRatio),
   defaultResolution: optionalString(form.defaultResolution),
@@ -637,7 +664,6 @@ const deletedVeoConfig = (): Partial<GoogleVeoConfig> => ({
   projectId: undefined,
   location: undefined,
   textImageModel: undefined,
-  extensionModel: undefined,
   outputGcsUri: undefined,
   defaultSampleCount: undefined,
   defaultAspectRatio: undefined,
@@ -692,10 +718,10 @@ const getProviderModelLabel = (
   config: AppConfig | null
 ): string => {
   if (provider === "seedance") {
-    return config?.providers.volcengineSeedance.reqKey ?? "doubao-seedance-2-0-260128";
+    return normalizeSeedanceModelId(config?.providers.volcengineSeedance.reqKey);
   }
 
-  return config?.providers.googleVeo.textImageModel ?? "veo-3.0-generate-preview";
+  return normalizeVeoModelId(config?.providers.googleVeo.textImageModel);
 };
 
 const getProviderTitle = (provider: ProviderKind): string => {

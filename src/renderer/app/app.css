@@ -994,7 +994,7 @@ button {
 
 .story-script-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -1063,7 +1063,7 @@ button {
 }
 
 .story-script-list {
-  grid-row: 3;
+  grid-row: 5;
   display: grid;
   align-content: start;
   gap: 8px;
@@ -1072,8 +1072,192 @@ button {
   padding-right: 3px;
 }
 
-.story-progress-card {
+.story-generation-modes {
   grid-row: 2;
+  display: inline-flex;
+  width: fit-content;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(8, 11, 14, 0.5);
+}
+
+.story-generation-modes button {
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  color: #8f99a6;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.story-generation-modes button:hover {
+  color: #d9e0e8;
+}
+
+.story-generation-modes button.is-active {
+  background: rgba(118, 84, 237, 0.2);
+  color: #e8e1ff;
+  box-shadow: inset 0 0 0 1px rgba(139, 101, 255, 0.3);
+}
+
+.story-reference-library,
+.story-boundary-mode-note {
+  grid-row: 3;
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.story-reference-library {
+  display: grid;
+  gap: 9px;
+  padding: 9px;
+}
+
+.story-reference-library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.story-reference-library-head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.story-reference-library-head strong {
+  color: #dfe5ed;
+  font-size: 12px;
+}
+
+.story-reference-library-head > div > span,
+.story-reference-empty {
+  color: #7f8996;
+  font-size: 11px;
+}
+
+.story-reference-upload {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 27px;
+  padding: 0 9px;
+  border: 1px solid rgba(139, 101, 255, 0.28);
+  border-radius: 6px;
+  background: rgba(118, 84, 237, 0.1);
+  color: #cfc3f8;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.story-reference-upload:hover {
+  border-color: rgba(139, 101, 255, 0.52);
+  background: rgba(118, 84, 237, 0.16);
+}
+
+.story-reference-upload input {
+  display: none;
+}
+
+.story-reference-library-assets {
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.story-reference-library-item {
+  position: relative;
+  display: grid;
+  flex: 0 0 132px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 24px 5px 5px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  background: rgba(8, 11, 14, 0.55);
+}
+
+.story-reference-library-thumb {
+  display: grid;
+  width: 44px;
+  height: 34px;
+  overflow: hidden;
+  place-items: center;
+  border-radius: 5px;
+  background: #0b0e12;
+  color: #a69af0;
+}
+
+.story-reference-library-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.story-reference-library-meta {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.story-reference-library-meta strong,
+.story-reference-library-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-reference-library-meta strong {
+  color: #d9e0e8;
+  font-size: 11px;
+}
+
+.story-reference-library-meta span {
+  color: #798491;
+  font-size: 10px;
+}
+
+.story-reference-library-item > button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border-radius: 4px;
+  color: #707b87;
+}
+
+.story-reference-library-item > button:hover {
+  background: rgba(255, 94, 112, 0.12);
+  color: #ff94a0;
+}
+
+.story-reference-empty {
+  margin: 0;
+  padding: 5px 2px;
+}
+
+.story-boundary-mode-note {
+  padding: 10px 12px;
+  color: #929ca8;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.story-progress-card {
+  grid-row: 4;
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -1171,6 +1355,18 @@ button {
   border-color: rgba(104, 215, 255, 0.45);
 }
 
+.story-script-row.is-inactive-mode {
+  border-color: rgba(255, 255, 255, 0.045);
+  background: rgba(255, 255, 255, 0.012);
+  opacity: 0.5;
+}
+
+.story-script-row.is-inactive-mode textarea,
+.story-script-row.is-inactive-mode input {
+  color: #8a929d;
+  cursor: default;
+}
+
 .story-select-field {
   display: grid;
   width: 24px;
@@ -1207,10 +1403,12 @@ button {
 
 .story-description-field {
   position: relative;
+  display: grid;
+  gap: 6px;
   min-width: 0;
 }
 
-.story-description-field > span {
+.story-segment-number {
   position: absolute;
   top: 7px;
   left: 8px;
@@ -1220,12 +1418,32 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.story-generation-type {
+  position: absolute;
+  z-index: 1;
+  top: 6px;
+  right: 7px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(118, 84, 237, 0.16);
+  color: #cbbdff;
+  font-size: 9px;
+  font-weight: 720;
+  line-height: 1.2;
+  pointer-events: none;
+}
+
+.story-generation-type.is-boundary-frames {
+  background: rgba(104, 215, 255, 0.11);
+  color: #a9dfee;
+}
+
 .story-description-field textarea {
   display: block;
   width: 100%;
   height: 58px;
   resize: none;
-  padding: 7px 8px 7px 35px;
+  padding: 25px 8px 7px 35px;
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 6px;
   outline: 0;
@@ -1257,6 +1475,149 @@ button {
 
 .story-description-field textarea::placeholder {
   color: #6f7884;
+}
+
+.story-mention-menu {
+  position: absolute;
+  z-index: 30;
+  top: 61px;
+  left: 35px;
+  display: grid;
+  width: min(320px, calc(100% - 43px));
+  max-height: 190px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid rgba(139, 101, 255, 0.42);
+  border-radius: 7px;
+  background: #171a21;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38);
+}
+
+.story-mention-menu button {
+  display: grid;
+  grid-template-columns: 18px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 5px;
+  color: #dfe5ed;
+  text-align: left;
+}
+
+.story-mention-menu button:hover {
+  background: rgba(118, 84, 237, 0.18);
+}
+
+.story-mention-menu button > span {
+  color: #c6b6ff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.story-mention-menu button > small {
+  position: static;
+  max-width: none;
+  overflow: hidden;
+  color: #8f99a6;
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-mention-menu p {
+  margin: 0;
+  padding: 8px;
+  color: #8f99a6;
+  font-size: 11px;
+}
+
+.story-reference-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.story-reference-chip,
+.story-reference-add {
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.story-reference-chip {
+  overflow: hidden;
+  opacity: 0.58;
+}
+
+.story-reference-chip.is-referenced {
+  border-color: rgba(104, 215, 255, 0.42);
+  background: rgba(72, 169, 199, 0.1);
+  opacity: 1;
+}
+
+.story-reference-thumb {
+  display: grid;
+  width: 27px;
+  height: 25px;
+  overflow: hidden;
+  place-items: center;
+  background: #0c0f13;
+  color: #a69af0;
+}
+
+.story-reference-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.story-reference-chip > button:not(.story-reference-remove) {
+  align-self: stretch;
+  padding: 0 6px;
+  color: #cbd3dd;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.story-reference-chip.is-referenced > button:not(.story-reference-remove) {
+  color: #c9f4ff;
+}
+
+.story-reference-remove {
+  display: grid;
+  align-self: stretch;
+  width: 23px;
+  place-items: center;
+  color: #737e8a;
+}
+
+.story-reference-remove:hover {
+  background: rgba(255, 94, 112, 0.12);
+  color: #ff94a0;
+}
+
+.story-reference-add {
+  gap: 5px;
+  padding: 0 8px;
+  color: #9da7b4;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.story-reference-add:hover {
+  border-color: rgba(139, 101, 255, 0.42);
+  background: rgba(118, 84, 237, 0.1);
+  color: #d7cdfc;
+}
+
+.story-reference-add input {
+  display: none;
 }
 
 .story-duration-field {

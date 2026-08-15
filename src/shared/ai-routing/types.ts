@@ -1,6 +1,7 @@
 export type GenerationMode =
   | "text-to-video"
   | "image-to-video"
+  | "reference-to-video"
   | "first-frame-to-video"
   | "first-last-frame-to-video"
   | "video-to-video"
@@ -28,6 +29,7 @@ export interface ReferenceImageInput {
   uri?: string;
   absolutePath?: string;
   mimeType?: string;
+  mediaType?: "image" | "video";
   role?:
     | "reference"
     | "style"
@@ -128,6 +130,10 @@ export interface ProviderModelCapabilities {
   supportedAspectRatios?: string[];
   supportedResolutions?: ProviderResolution[];
   supportedFps?: number[];
+  supportsReferenceImages?: boolean;
+  supportsReferenceVideos?: boolean;
+  maxReferenceImages?: number;
+  maxReferenceVideos?: number;
 }
 
 export interface ProviderCapabilities {
@@ -182,6 +188,7 @@ export interface ResolvedAssetReference {
   assetId: string;
   role:
     | "reference-image"
+    | "reference-video"
     | "first-frame"
     | "last-frame"
     | "input-video"

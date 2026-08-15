@@ -25,7 +25,6 @@ export interface GoogleVeoConfig {
   projectId?: string;
   location?: string;
   textImageModel?: string;
-  extensionModel?: string;
   outputGcsUri?: string;
   defaultSampleCount?: number;
   defaultAspectRatio?: string;

@@ -8,6 +8,10 @@ import type {
   ResolvedAssetReference
 } from "@shared/ai-routing";
 import type { VolcengineSeedanceConfig } from "@shared/types/app-config";
+import {
+  DEFAULT_SEEDANCE_MODEL_ID,
+  SEEDANCE_MODEL_OPTIONS
+} from "@shared/video-models";
 import { AiRoutingError } from "@main/ai-router/errors";
 import type { LocalAppConfigService } from "../services/appConfigService";
 import { BaseCloudProviderAdapter } from "./BaseCloudProviderAdapter";
@@ -19,10 +23,11 @@ import {
   loadMediaReference
 } from "./mediaReference";
 
-const DEFAULT_REQ_KEY = "doubao-seedance-2-0-260128";
+const DEFAULT_REQ_KEY = DEFAULT_SEEDANCE_MODEL_ID;
 const DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const SEEDANCE_MODES = [
   "text-to-video",
+  "reference-to-video",
   "first-frame-to-video",
   "first-last-frame-to-video"
 ] as const;
@@ -32,18 +37,20 @@ const capabilities: ProviderCapabilities = {
   displayName: "Volcengine Ark Seedance",
   authMode: "bearer-token",
   supportedModes: [...SEEDANCE_MODES],
-  supportedModels: [
-    {
-      modelId: DEFAULT_REQ_KEY,
-      displayName: "Doubao Seedance 2.0",
-      supportedModes: [...SEEDANCE_MODES]
-    }
-  ],
+  supportedModels: SEEDANCE_MODEL_OPTIONS.map((model) => ({
+    modelId: model.id,
+    displayName: model.label,
+    supportedModes: [...SEEDANCE_MODES],
+    supportsReferenceImages: true,
+    supportsReferenceVideos: true,
+    maxReferenceImages: 9,
+    maxReferenceVideos: 3
+  })),
   supportsNegativePrompt: false,
   supportsSeed: false,
   supportsStylePreset: false,
   supportsCameraMotion: false,
-  supportsReferenceImages: false,
+  supportsReferenceImages: true,
   supportsFirstFrame: true,
   supportsLastFrame: true,
   supportsInputVideo: false,
@@ -89,12 +96,12 @@ export class SeedanceProviderAdapter extends BaseCloudProviderAdapter {
       ]
     };
 
-    const imageReferences = await this.resolveImageReferences(request, context);
-    if (imageReferences.length > 0) {
+    const mediaReferences = await this.resolveMediaReferences(request, context);
+    if (mediaReferences.length > 0) {
       const content = body.content as ArkContentPart[];
       content.push(
         ...(await Promise.all(
-          imageReferences.map((reference) => mapSeedanceImageReference(reference))
+          mediaReferences.map((reference) => mapSeedanceMediaReference(reference))
         ))
       );
     }
@@ -222,12 +229,28 @@ export class SeedanceProviderAdapter extends BaseCloudProviderAdapter {
     };
   }
 
-  private async resolveImageReferences(
+  private async resolveMediaReferences(
     request: GenerateVideoRequest,
     context: ModelRoutingContext
   ): Promise<ResolvedAssetReference[]> {
     if (request.mode === "text-to-video") {
       return [];
+    }
+
+    if (request.mode === "reference-to-video") {
+      const references = context.resolvedAssets.filter(
+        (asset) =>
+          asset.role === "reference-image" || asset.role === "reference-video"
+      );
+      if (references.length === 0) {
+        throw new AiRoutingError({
+          code: "VALIDATION_ERROR",
+          message: "Seedance reference-to-video requires at least one referenced image or video.",
+          providerId: this.providerId,
+          retryable: false
+        });
+      }
+      return references;
     }
 
     const firstFrame = context.resolvedAssets.find(
@@ -272,12 +295,15 @@ interface RequiredSeedanceConfig {
 }
 
 interface ArkContentPart {
-  type: "text" | "image_url";
+  type: "text" | "image_url" | "video_url";
   text?: string;
   image_url?: {
     url: string;
   };
-  role?: "reference_image";
+  video_url?: {
+    url: string;
+  };
+  role?: "reference_image" | "reference_video" | "first_frame" | "last_frame";
 }
 
 class SeedanceRestClient {
@@ -448,11 +474,20 @@ const compactLogValue = (value: unknown): unknown => {
   );
 };
 
-const mapSeedanceImageReference = async (
+const mapSeedanceMediaReference = async (
   reference: ResolvedAssetReference
 ): Promise<ArkContentPart> => {
+  const isVideo = reference.role === "reference-video";
+  const imageRole =
+    reference.role === "first-frame"
+      ? "first_frame"
+      : reference.role === "last-frame"
+        ? "last_frame"
+        : "reference_image";
   if (isRemoteHttpUri(reference.uri)) {
-    return arkImagePart(reference.uri);
+    return isVideo
+      ? arkVideoPart(reference.uri)
+      : arkImagePart(reference.uri, imageRole);
   }
 
   if (isGcsUri(reference.uri)) {
@@ -475,13 +510,23 @@ const mapSeedanceImageReference = async (
     });
   }
 
-  return arkImagePart(`data:${media.mimeType};base64,${media.bytesBase64Encoded}`);
+  const dataUri = `data:${media.mimeType};base64,${media.bytesBase64Encoded}`;
+  return isVideo ? arkVideoPart(dataUri) : arkImagePart(dataUri, imageRole);
 };
 
-const arkImagePart = (url: string): ArkContentPart => ({
+const arkImagePart = (
+  url: string,
+  role: "reference_image" | "first_frame" | "last_frame"
+): ArkContentPart => ({
   type: "image_url",
   image_url: { url },
-  role: "reference_image"
+  role
+});
+
+const arkVideoPart = (url: string): ArkContentPart => ({
+  type: "video_url",
+  video_url: { url },
+  role: "reference_video"
 });
 
 const modelSupportsSeed = (modelId: string): boolean => {

@@ -1,7 +1,10 @@
 import type { Asset } from "./asset";
 import type { AiGenerationJob } from "./ai";
 import type { EditCommand } from "./editing";
-import type { StoryboardSegment } from "./storyboard";
+import type {
+  StoryboardReferenceAsset,
+  StoryboardSegment
+} from "./storyboard";
 import type { Timeline } from "./timeline";
 
 export interface ProjectSettings {
@@ -39,6 +42,8 @@ export interface Project {
   settings: ProjectSettings;
   assets: Asset[];
   timeline: Timeline;
+  storyboardGenerationMode?: "reference-to-video" | "boundary-frames";
+  storyboardReferenceAssets?: StoryboardReferenceAsset[];
   storyboardSegments: StoryboardSegment[];
   aiGenerationJobs: AiGenerationJob[];
   renderCache: RenderCacheEntry[];

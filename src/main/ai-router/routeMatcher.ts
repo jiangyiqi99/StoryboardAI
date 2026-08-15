@@ -3,6 +3,7 @@ import type {
   ModelRoutingContext,
   ProviderAdapter,
   ProviderCapabilities,
+  ProviderModelCapabilities,
   ProviderRouteRule,
   SelectedProviderRoute
 } from "@shared/ai-routing";
@@ -148,13 +149,18 @@ export class ProviderRouteMatcher {
       return false;
     }
 
+    let model: ProviderModelCapabilities | undefined;
     if (request.modelId) {
-      const model = capabilities.supportedModels.find(
+      model = capabilities.supportedModels.find(
         (candidate) => candidate.modelId === request.modelId
       );
       if (!model || !model.supportedModes.includes(request.mode)) {
         return false;
       }
+    }
+
+    if (model && !this.modelSupportsRequest(model, request)) {
+      return false;
     }
 
     if (request.durationSec !== undefined) {
@@ -217,6 +223,61 @@ export class ProviderRouteMatcher {
       return false;
     }
 
+    return true;
+  }
+
+  private modelSupportsRequest(
+    model: ProviderModelCapabilities,
+    request: GenerateVideoRequest
+  ): boolean {
+    const imageReferences = (request.referenceImages ?? []).filter(
+      (reference) => reference.mediaType !== "video"
+    );
+    const videoReferences = (request.referenceImages ?? []).filter(
+      (reference) => reference.mediaType === "video"
+    );
+
+    if (imageReferences.length > 0 && model.supportsReferenceImages === false) {
+      return false;
+    }
+    if (videoReferences.length > 0 && model.supportsReferenceVideos !== true) {
+      return false;
+    }
+    if (
+      model.maxReferenceImages !== undefined &&
+      imageReferences.length > model.maxReferenceImages
+    ) {
+      return false;
+    }
+    if (
+      model.maxReferenceVideos !== undefined &&
+      videoReferences.length > model.maxReferenceVideos
+    ) {
+      return false;
+    }
+    if (
+      request.durationSec !== undefined &&
+      ((model.minDurationSec !== undefined &&
+        request.durationSec < model.minDurationSec) ||
+        (model.maxDurationSec !== undefined &&
+          request.durationSec > model.maxDurationSec))
+    ) {
+      return false;
+    }
+    if (
+      request.aspectRatio &&
+      model.supportedAspectRatios &&
+      !model.supportedAspectRatios.includes(request.aspectRatio)
+    ) {
+      return false;
+    }
+    if (
+      request.fps &&
+      model.supportedFps &&
+      !model.supportedFps.includes(request.fps)
+    ) {
+      return false;
+    }
     return true;
   }
 }

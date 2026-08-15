@@ -6,7 +6,10 @@
   "description": "An AI-generated GPLv3 desktop video editor scaffold with AI workflows, built with Electron, React, TypeScript, and FFmpeg.",
   "author": "StoryboardAI",
   "engines": {
-    "node": ">=24"
+    "node": ">=24 <25"
+  },
+  "overrides": {
+    "yauzl": "^3.3.1"
   },
   "main": "out/main/index.js",
   "scripts": {

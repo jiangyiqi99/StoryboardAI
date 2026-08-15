@@ -29,7 +29,10 @@ import type { Asset } from "@shared/types/asset";
 import type { AiGenerationJob, AiGenerationStatus } from "@shared/types/ai";
 import type { MediaEngineFacade } from "@shared/types/media-engine";
 import type { Project } from "@shared/types/project";
-import type { StoryboardSegment } from "@shared/types/storyboard";
+import type {
+  StoryboardReferenceAsset,
+  StoryboardSegment
+} from "@shared/types/storyboard";
 import type { Clip, Timeline, Track } from "@shared/types/timeline";
 import type { LocalProjectFileService } from "@project-system/projectFile";
 import {
@@ -156,11 +159,16 @@ export class StoryboardToTimelineWorkflow {
           modelId: request.modelId
         });
 
-        const previousSegment = plannedSegments[plannedSegment.index - 1];
-        const nextSegment = plannedSegments[plannedSegment.index + 1];
+        const usesReferenceMode = request.generationMode === "reference-to-video";
+        const previousSegment = usesReferenceMode
+          ? undefined
+          : plannedSegments[plannedSegment.index - 1];
+        const nextSegment = usesReferenceMode
+          ? undefined
+          : plannedSegments[plannedSegment.index + 1];
         this.emitSegmentProgress(options, request, plannedSegment, plannedSegments.length, {
           stage: "boundary-resolving",
-          message: "正在解析首尾参考帧"
+          message: usesReferenceMode ? "正在解析引用素材" : "正在解析首尾参考帧"
         });
         const previousBoundary = previousSegment
           ? await this.resolveBoundaryFrame(
@@ -217,7 +225,7 @@ export class StoryboardToTimelineWorkflow {
         }
         this.emitSegmentProgress(options, request, plannedSegment, plannedSegments.length, {
           stage: "boundary-ready",
-          message: "参考帧解析完成",
+          message: usesReferenceMode ? "引用素材解析完成" : "参考帧解析完成",
           details: {
             previousBoundaryAssetId: previousBoundary?.assetId,
             previousBoundaryFramePath: previousBoundary?.framePath,
@@ -800,6 +808,7 @@ function buildGenerateVideoRequest({
     plannedSegment.index
   );
   const mode = selectGenerationMode({
+    generationMode: request.generationMode,
     isReplacement: Boolean(request.replaceSegmentId),
     previousBoundary,
     nextBoundary
@@ -812,12 +821,28 @@ function buildGenerateVideoRequest({
     providerId: request.providerId,
     modelId: request.modelId,
     mode,
-    prompt: plannedSegment.input.text,
+    prompt:
+      mode === "reference-to-video"
+        ? remapSegmentReferencePrompt(
+            project,
+            plannedSegment.input.referenceAssetIds,
+            plannedSegment.input.text
+          )
+        : plannedSegment.input.text,
     durationSec: plannedSegment.input.durationSec,
     width: project.settings.width,
     height: project.settings.height,
     fps: project.settings.fps,
     aspectRatio: request.aspectRatio,
+    referenceImages:
+      mode === "reference-to-video"
+        ? resolveSegmentReferenceInputs(
+            project,
+            projectRootPath,
+            plannedSegment.input.referenceAssetIds,
+            plannedSegment.input.text
+          )
+        : undefined,
     firstFrameAssetId: previousBoundary?.assetId,
     firstFramePath: previousBoundary?.framePath,
     lastFrameAssetId: nextBoundary?.assetId,
@@ -845,14 +870,19 @@ function buildGenerateVideoRequest({
 }
 
 function selectGenerationMode({
+  generationMode,
   isReplacement,
   previousBoundary,
   nextBoundary
 }: {
+  generationMode?: "reference-to-video" | "boundary-frames";
   isReplacement: boolean;
   previousBoundary?: BoundaryFrame;
   nextBoundary?: BoundaryFrame;
 }): GenerateVideoRequest["mode"] {
+  if (generationMode === "reference-to-video") {
+    return "reference-to-video";
+  }
   if (isReplacement && previousBoundary && nextBoundary) {
     return "first-last-frame-to-video";
   }
@@ -864,6 +894,107 @@ function selectGenerationMode({
   return "text-to-video";
 }
 
+function resolveSegmentReferenceInputs(
+  project: Project,
+  projectRootPath: string,
+  referenceIds: string[] | undefined,
+  prompt: string
+): GenerateVideoRequest["referenceImages"] {
+  const references = resolveOrderedSegmentReferences(
+    project,
+    referenceIds,
+    prompt
+  );
+  return references.length > 0
+    ? references.map(({ asset, reference }) => ({
+        assetId: asset.id,
+        absolutePath: fromProjectRelativePath(
+          projectRootPath,
+          asset.projectRelativePath!
+        ),
+        mediaType: reference.kind,
+        role: "reference" as const
+      }))
+    : undefined;
+}
+
+function remapSegmentReferencePrompt(
+  project: Project,
+  referenceIds: string[] | undefined,
+  prompt: string
+): string {
+  if (!referenceIds?.length) {
+    return prompt;
+  }
+
+  const references = resolveOrderedSegmentReferences(
+    project,
+    referenceIds,
+    prompt
+  );
+  let imageIndex = 0;
+  let videoIndex = 0;
+
+  return references.reduce((nextPrompt, { reference }) => {
+    const providerLabel =
+      reference.kind === "video"
+        ? `视频${++videoIndex}`
+        : `图片${++imageIndex}`;
+    return nextPrompt.replace(
+      new RegExp(`@${escapeRegExp(reference.label)}(?!\\d)`, "g"),
+      providerLabel
+    );
+  }, prompt);
+}
+
+function resolveOrderedSegmentReferences(
+  project: Project,
+  referenceIds: string[] | undefined,
+  prompt: string
+): Array<{ reference: StoryboardReferenceAsset; asset: Asset }> {
+  if (!referenceIds?.length) {
+    return [];
+  }
+
+  const libraryById = new Map(
+    (project.storyboardReferenceAssets ?? []).map((reference) => [
+      reference.id,
+      reference
+    ])
+  );
+  const assetsById = new Map(project.assets.map((asset) => [asset.id, asset]));
+
+  return referenceIds
+    .map((referenceId, fallbackIndex) => {
+      const reference = libraryById.get(referenceId);
+      const asset = reference ? assetsById.get(reference.assetId) : undefined;
+      if (!reference || !asset?.projectRelativePath) {
+        return undefined;
+      }
+      const mentionIndex = prompt.indexOf(`@${reference.label}`);
+      return {
+        reference,
+        asset,
+        order: mentionIndex >= 0 ? mentionIndex : prompt.length + fallbackIndex
+      };
+    })
+    .filter(
+      (
+        item
+      ): item is {
+        reference: StoryboardReferenceAsset;
+        asset: Asset & { projectRelativePath: string };
+        order: number;
+      } => Boolean(item)
+    )
+    .sort((first, second) => first.order - second.order)
+    .map(({ reference, asset }) => ({ reference, asset }));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function resolveStoryboardInputs(
   request: AiGenerateStoryboardRequest
 ): AiStoryboardSegmentInput[] {
@@ -871,7 +1002,8 @@ function resolveStoryboardInputs(
     ?.map((segment) => ({
       id: segment.id,
       text: segment.text.trim(),
-      durationSec: normalizeDuration(segment.durationSec, request.defaultDuration)
+      durationSec: normalizeDuration(segment.durationSec, request.defaultDuration),
+      referenceAssetIds: segment.referenceAssetIds
     }))
     .filter((segment) => segment.text.length > 0);
 
@@ -944,6 +1076,7 @@ function mergeStoryboardSegments(
       storyboardRef: association.storyboardRef,
       storyboardNumber: association.segmentNumber,
       text: plannedSegment.input.text,
+      referenceAssetIds: plannedSegment.input.referenceAssetIds,
       targetDuration: plannedSegment.input.durationSec,
       status: shouldGenerate ? "generating" : current?.status ?? "draft",
       timelineStart: plannedSegment.timelineStart,
@@ -972,7 +1105,9 @@ function createGenerationJob(
     storyboardSegmentNumber: association.segmentNumber,
     workflow: "storyboard-to-video",
     mode:
-      request.mode === "first-last-frame-to-video"
+      request.mode === "reference-to-video"
+        ? "reference-to-video"
+        : request.mode === "first-last-frame-to-video"
         ? "first-last-frame"
         : request.mode === "first-frame-to-video"
           ? "first-frame"
@@ -984,7 +1119,8 @@ function createGenerationJob(
     duration: plannedSegment.input.durationSec,
     inputAssetIds: [
       request.firstFrameAssetId,
-      request.lastFrameAssetId
+      request.lastFrameAssetId,
+      ...(request.referenceImages ?? []).map((reference) => reference.assetId)
     ].filter((assetId): assetId is string => Boolean(assetId)),
     inputFramePaths: [
       request.firstFramePath,

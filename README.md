@@ -20,7 +20,13 @@ AI-native 本地非线性视频剪辑软件架构骨架。当前阶段只搭建 
 
 ## 开发与打包
 
+开发环境使用 Node.js 24 LTS。Electron 的安装链通过 `package.json` 中的 npm
+`overrides` 固定 `yauzl@^3.3.1`，以避免旧版解压库在 Node.js 24.16 及更高版本下
+提前结束 macOS runtime 解压、导致 `npm install` 留下不完整 Electron.app 的问题。
+
 ```bash
+nvm use
+npm install
 npm run dev
 npm run build
 ./build --macarm64
@@ -257,6 +263,7 @@ interface GenerateVideoRequest {
   mode:
     | "text-to-video"
     | "image-to-video"
+    | "reference-to-video"
     | "first-frame-to-video"
     | "first-last-frame-to-video"
     | "video-to-video"
@@ -298,6 +305,7 @@ Capabilities 匹配机制：
 
 - mode 必须在 `ProviderCapabilities.supportedModes` 内。
 - 指定 `modelId` 时，model 的 `supportedModes` 也必须匹配。
+- 参考图片、参考视频的支持情况与数量上限声明在具体 model capabilities 上，而不是笼统套用到整个 provider。
 - `durationSec` 必须落在 provider/model 支持范围内。
 - `aspectRatio`、`fps`、`width`、`height` 按 provider route rule 和 capabilities 双重过滤。
 - `negativePrompt`、`seed`、`referenceImages`、`firstFrameAssetId`、`lastFrameAssetId`、`inputVideoAssetId`、`maskAssetId` 会检查 provider 是否声明支持。
@@ -309,6 +317,22 @@ Capabilities 匹配机制：
 - `width` / `height` / `aspectRatio` 可以映射为 provider 的 `resolution`、`ratio` 或 `aspect_ratio`。
 - `firstFrameAssetId` / `lastFrameAssetId` 先由 `AssetReferenceResolver` 解析为可上传文件、项目内临时 URI 或 Thin Model Proxy 可访问 URL，再交给 adapter 放进 `keyframes`、`image` 或 `references` 字段。
 - `inputVideoAssetId` / `maskAssetId` 用于 video-to-video 和 replace-range 的视频、遮罩输入映射。
+
+参考生成数据模型：
+
+- 项目只保存一份 `storyboardReferenceAssets` 引用库，每个条目包含稳定引用 ID、项目 Asset ID、媒体类型和原始素材名称；分镜段只保存 `referenceAssetIds`，不复制引用素材信息。
+- Renderer 使用原始素材名称提供 `@` 选择并记录对应引用 ID。生成任务只解析当前分镜明确引用的条目，在后台按提示词中的出现顺序排列素材，并在提交 Seedance 前临时生成模型所见的“图片1 / 视频1”编号，不改动项目内名称。
+- 每个 `StoryboardSegment` 自己保存 `generationMode`。顶部“参考生成 / 首尾帧生成”标签只控制当前可编辑和可生成的分镜类型；另一类型分镜仍显示，但处于只读灰色状态。
+- `reference-to-video` 与首尾帧模式互斥。Seedance 请求把图片映射为 `reference_image`，把视频映射为 `reference_video`；首尾帧仍映射为 `first_frame` / `last_frame`。
+
+### 固定模型目录与自定义模型限制
+
+模型设置中的 Seedance 与 Google Veo 模型均来自应用内维护的固定下拉列表，不接受任意自定义 Model ID、Endpoint ID 或 Extension Model：
+
+- Seedance：`doubao-seedance-2-0-260128`、`doubao-seedance-2-0-fast-260128`。
+- Google Veo：Veo 2.0、3.0、3.1 的正式 Generate / Fast Generate 型号；预览期旧 ID 不再作为选项。
+
+暂不支持“输入任意模型 ID 即接入自定义模型”。不同提供商甚至同一提供商的不同模型系列，在请求地址、鉴权、输入媒体字段、异步任务、轮询响应和能力限制上都可能不同。新增模型必须先在对应 `ProviderAdapter` 中实现并验证 API 映射，再加入 `src/shared/video-models.ts` 固定目录及 model capabilities，不能仅通过配置字符串绕过适配层。
 
 错误处理策略：
 

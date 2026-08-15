@@ -14,7 +14,9 @@ export class AssetReferenceResolver {
           referenceImage.role === "first-frame" ||
           referenceImage.role === "last-frame"
             ? referenceImage.role
-            : "reference-image";
+            : referenceImage.mediaType === "video"
+              ? "reference-video"
+              : "reference-image";
         references.push({
           assetId: referenceImage.assetId ?? `external-reference-${index}`,
           role,

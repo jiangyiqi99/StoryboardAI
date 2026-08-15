@@ -8,6 +8,7 @@ import type {
   ResolvedAssetReference
 } from "@shared/ai-routing";
 import type { GoogleVeoConfig } from "@shared/types/app-config";
+import { DEFAULT_VEO_MODEL_ID, VEO_MODEL_OPTIONS } from "@shared/video-models";
 import { AiRoutingError } from "@main/ai-router/errors";
 import type { LocalAppConfigService } from "../services/appConfigService";
 import { BaseCloudProviderAdapter } from "./BaseCloudProviderAdapter";
@@ -15,8 +16,7 @@ import { loadMediaReference } from "./mediaReference";
 import { decodeProviderJobId, encodeProviderJobId } from "./providerJobId";
 import { extractVideoOutputs } from "./videoOutput";
 
-const DEFAULT_TEXT_IMAGE_MODEL = "veo-3.0-generate-preview";
-const CONFIGURED_MODEL_ID = "veo-configured";
+const DEFAULT_TEXT_IMAGE_MODEL = DEFAULT_VEO_MODEL_ID;
 const VEO_MODES = [
   "text-to-video",
   "first-frame-to-video",
@@ -28,23 +28,15 @@ const capabilities: ProviderCapabilities = {
   displayName: "Google Veo",
   authMode: "api-key",
   supportedModes: [...VEO_MODES],
-  supportedModels: [
-    {
-      modelId: CONFIGURED_MODEL_ID,
-      displayName: "Configured Veo Text/Image Model",
-      supportedModes: [...VEO_MODES]
-    },
-    {
-      modelId: DEFAULT_TEXT_IMAGE_MODEL,
-      displayName: "Veo 3.0 Generate Preview",
-      supportedModes: [...VEO_MODES]
-    },
-    {
-      modelId: "veo-2.0-generate-001",
-      displayName: "Veo 2.0 Generate",
-      supportedModes: [...VEO_MODES]
-    }
-  ],
+  supportedModels: VEO_MODEL_OPTIONS.map((model) => ({
+    modelId: model.id,
+    displayName: model.label,
+    supportedModes: model.id.startsWith("veo-3.0-")
+      ? ["text-to-video" as const]
+      : [...VEO_MODES],
+    supportsReferenceImages: false,
+    supportsReferenceVideos: false
+  })),
   supportsNegativePrompt: true,
   supportsSeed: true,
   supportsStylePreset: false,
@@ -265,7 +257,6 @@ export class GoogleVeoProviderAdapter extends BaseCloudProviderAdapter {
       projectId: config.projectId,
       location: config.location ?? "global",
       textImageModel: config.textImageModel ?? DEFAULT_TEXT_IMAGE_MODEL,
-      extensionModel: config.extensionModel,
       defaultSampleCount: config.defaultSampleCount ?? 1,
       defaultAspectRatio: config.defaultAspectRatio ?? "16:9",
       defaultResolution: config.defaultResolution,
@@ -282,7 +273,6 @@ interface RequiredGoogleVeoConfig {
   projectId: string;
   location: string;
   textImageModel: string;
-  extensionModel?: string;
   defaultSampleCount: number;
   defaultAspectRatio: string;
   defaultResolution?: string;
@@ -416,7 +406,7 @@ const resolveModelId = (
   requestedModelId: string | undefined,
   config: RequiredGoogleVeoConfig
 ): string => {
-  if (!requestedModelId || requestedModelId === CONFIGURED_MODEL_ID) {
+  if (!requestedModelId) {
     return config.textImageModel;
   }
 

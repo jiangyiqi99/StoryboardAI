@@ -3,6 +3,7 @@ import { AiRoutingError } from "./errors";
 
 const modesRequiringVisualInput = new Set([
   "image-to-video",
+  "reference-to-video",
   "first-frame-to-video",
   "first-last-frame-to-video",
   "video-to-video",
@@ -67,6 +68,17 @@ export class GenerateVideoRequestValidator {
       throw new AiRoutingError({
         code: "VALIDATION_ERROR",
         message: "first-frame-to-video requires a first frame input.",
+        retryable: false
+      });
+    }
+
+    if (
+      request.mode === "reference-to-video" &&
+      !request.referenceImages?.length
+    ) {
+      throw new AiRoutingError({
+        code: "VALIDATION_ERROR",
+        message: "reference-to-video requires at least one explicitly referenced image or video.",
         retryable: false
       });
     }

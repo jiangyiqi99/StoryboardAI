@@ -14,6 +14,7 @@ import type {
   EditorMediaAsset,
   EditorRgbColor,
   EditorStoryBeat,
+  EditorStoryReferenceAsset,
   EditorTimelineClip,
   EditorTimelineTrackId
 } from "./editorTypes";
@@ -31,6 +32,8 @@ export interface EditorProjectState {
   assets: EditorMediaAsset[];
   timelineClips: EditorTimelineClip[];
   storyBeats: EditorStoryBeat[];
+  storyReferenceAssets: EditorStoryReferenceAsset[];
+  storyGenerationMode: "reference-to-video" | "boundary-frames";
   playheadSec: number;
   selectedClipId?: string;
 }
@@ -46,12 +49,20 @@ export const projectSessionToEditorState = (
     session.assetFiles.map((assetFile) => [assetFile.assetId, assetFile])
   );
 
+  const storyReferenceAssets = resolveProjectStoryReferences(session.project);
   return {
     assets: session.project.assets.map((asset) =>
       projectAssetToEditorAsset(asset, assetFilesById.get(asset.id))
     ),
     timelineClips: projectTimelineToEditorClips(session.project.timeline),
-    storyBeats: projectSegmentsToStoryBeats(session.project.storyboardSegments),
+    storyBeats: projectSegmentsToStoryBeats(
+      session.project.storyboardSegments,
+      storyReferenceAssets,
+      session.project.storyboardGenerationMode ?? "reference-to-video"
+    ),
+    storyReferenceAssets,
+    storyGenerationMode:
+      session.project.storyboardGenerationMode ?? "reference-to-video",
     playheadSec: session.project.timeline.playhead,
     selectedClipId: session.project.timeline.selection?.clipIds[0]
   };
@@ -110,6 +121,13 @@ export const editorStateToProject = (
       storyboardBindingBySegmentId,
       storyboardBindingByAssetId
     ),
+    storyboardReferenceAssets: state.storyReferenceAssets.map((reference) => ({
+      id: reference.id,
+      assetId: reference.assetId,
+      kind: reference.kind,
+      label: reference.label
+    })),
+    storyboardGenerationMode: state.storyGenerationMode,
     storyboardSegments,
     aiGenerationJobs: baseProject.aiGenerationJobs.map((job) =>
       applyStoryboardJobAssociation(job, storyboardBindingByJobId.get(job.id))
@@ -117,10 +135,14 @@ export const editorStateToProject = (
   };
 };
 
-export const createBlankStoryBeat = (): EditorStoryBeat => ({
+export const createBlankStoryBeat = (
+  generationMode: EditorStoryBeat["generationMode"] = "reference-to-video"
+): EditorStoryBeat => ({
   id: `story-${crypto.randomUUID()}`,
   description: "",
-  durationSec: DEFAULT_STORY_BEAT_DURATION_SEC
+  durationSec: DEFAULT_STORY_BEAT_DURATION_SEC,
+  generationMode,
+  referenceAssetIds: []
 });
 
 export const ensureTrailingBlankStoryBeat = (
@@ -137,7 +159,9 @@ export const ensureTrailingBlankStoryBeat = (
   }
 
   if (!isBlankStoryBeat(nextBeats[nextBeats.length - 1])) {
-    nextBeats.push(createBlankStoryBeat());
+    nextBeats.push(
+      createBlankStoryBeat(nextBeats[nextBeats.length - 1].generationMode)
+    );
   }
 
   return nextBeats;
@@ -323,13 +347,25 @@ const editorClipToProjectClip = (
 };
 
 const projectSegmentsToStoryBeats = (
-  segments: StoryboardSegment[]
+  segments: StoryboardSegment[],
+  referenceAssets: EditorStoryReferenceAsset[],
+  legacyGenerationMode: EditorStoryBeat["generationMode"]
 ): EditorStoryBeat[] => {
   const beats = [...segments]
     .sort((first, second) => first.index - second.index)
     .map((segment) => ({
       id: segment.id,
       description: segment.text,
+      generationMode: segment.generationMode ?? legacyGenerationMode,
+      referenceAssetIds:
+        segment.referenceAssetIds ??
+        segment.referenceAssets
+          ?.map((legacyReference) =>
+            referenceAssets.find(
+              (reference) => reference.assetId === legacyReference.assetId
+            )?.id
+          )
+          .filter((id): id is string => Boolean(id)),
       durationSec: normalizePositiveNumber(
         segment.targetDuration,
         DEFAULT_STORY_BEAT_DURATION_SEC
@@ -361,6 +397,9 @@ const editorStoryBeatsToProjectSegments = (
         storyboardRef: association.storyboardRef,
         storyboardNumber: association.segmentNumber,
         text: beat.description.trim(),
+        generationMode: beat.generationMode,
+        referenceAssetIds: beat.referenceAssetIds,
+        referenceAssets: undefined,
         targetDuration: normalizePositiveNumber(
           beat.durationSec,
           DEFAULT_STORY_BEAT_DURATION_SEC
@@ -373,6 +412,34 @@ const editorStoryBeatsToProjectSegments = (
           : existingSegment?.timelineEnd
       };
     });
+};
+
+const resolveProjectStoryReferences = (
+  project: Project
+): EditorStoryReferenceAsset[] => {
+  const references =
+    project.storyboardReferenceAssets ??
+    project.storyboardSegments.flatMap((segment) => segment.referenceAssets ?? []);
+  return Array.from(
+    new Map(
+      references.map((reference) => {
+        const asset = project.assets.find(
+          (candidate) => candidate.id === reference.assetId
+        );
+        const kind =
+          reference.kind ?? (asset?.kind === "video" ? "video" : "image");
+        return [
+          reference.assetId,
+          {
+            id: reference.id ?? `story-reference-${reference.assetId}`,
+            assetId: reference.assetId,
+            kind,
+            label: reference.label
+          }
+        ];
+      })
+    ).values()
+  );
 };
 
 const createStoryboardAssociationBindings = (

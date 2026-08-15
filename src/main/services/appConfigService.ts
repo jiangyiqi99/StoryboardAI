@@ -10,6 +10,12 @@ import type {
   VolcengineSeedanceConfig
 } from "@shared/types/app-config";
 import { APP_CONFIG_SCHEMA_VERSION } from "@shared/types/app-config";
+import {
+  DEFAULT_SEEDANCE_MODEL_ID,
+  DEFAULT_VEO_MODEL_ID,
+  normalizeSeedanceModelId,
+  normalizeVeoModelId
+} from "@shared/video-models";
 
 const REDACTED_SECRET = "********";
 const CONFIG_FILE_NAME = "app-config.json";
@@ -35,11 +41,12 @@ const defaultConfig = (): AppConfig => ({
         process.env.ARK_BASE_URL ??
         process.env.SEEDANCE_BASE_URL ??
         "https://ark.cn-beijing.volces.com/api/v3",
-      reqKey:
+      reqKey: normalizeSeedanceModelId(
         process.env.SEEDANCE_MODEL_ID ??
         process.env.ARK_SEEDANCE_MODEL_ID ??
         process.env.SEEDANCE_REQ_KEY ??
-        "doubao-seedance-2-0-260128",
+        DEFAULT_SEEDANCE_MODEL_ID
+      ),
       timeoutMs: numberFromEnv("SEEDANCE_TIMEOUT_MS") ?? 60_000,
       pollIntervalMs: numberFromEnv("SEEDANCE_POLL_INTERVAL_MS") ?? 30_000,
       pollTimeoutMs: numberFromEnv("SEEDANCE_POLL_TIMEOUT_MS") ?? 600_000
@@ -49,11 +56,11 @@ const defaultConfig = (): AppConfig => ({
       apiKey: process.env.GOOGLE_API_KEY,
       projectId: process.env.GOOGLE_CLOUD_PROJECT,
       location: process.env.GOOGLE_CLOUD_LOCATION ?? "global",
-      textImageModel:
+      textImageModel: normalizeVeoModelId(
         process.env.VEO_TEXT_IMAGE_MODEL ??
         process.env.GOOGLE_VEO_MODEL ??
-        "veo-3.0-generate-preview",
-      extensionModel: process.env.VEO_EXTENSION_MODEL,
+        DEFAULT_VEO_MODEL_ID
+      ),
       defaultSampleCount: numberFromEnv("GOOGLE_VEO_SAMPLE_COUNT") ?? 1,
       defaultAspectRatio: process.env.GOOGLE_VEO_ASPECT_RATIO ?? "16:9",
       defaultResolution: process.env.GOOGLE_VEO_RESOLUTION,
@@ -140,19 +147,27 @@ const mergeVolcengineSeedanceConfig = (
   base: VolcengineSeedanceConfig,
   update: Partial<VolcengineSeedanceConfig> = {}
 ): VolcengineSeedanceConfig => {
-  return mergeSecretsAware(base, update, [
+  const merged = mergeSecretsAware(base, update, [
     "apiKey",
     "accessKeyId",
     "secretAccessKey",
     "sessionToken"
   ]);
+  return {
+    ...merged,
+    reqKey: normalizeSeedanceModelId(merged.reqKey)
+  };
 };
 
 const mergeGoogleVeoConfig = (
   base: GoogleVeoConfig,
   update: Partial<GoogleVeoConfig> = {}
 ): GoogleVeoConfig => {
-  return mergeSecretsAware(base, update, ["apiKey"]);
+  const merged = mergeSecretsAware(base, update, ["apiKey"]);
+  return {
+    ...merged,
+    textImageModel: normalizeVeoModelId(merged.textImageModel)
+  };
 };
 
 const mergeSecretsAware = <TConfig extends Record<string, unknown>>(

@@ -2,36 +2,71 @@ import {
   Clock3,
   FileUp,
   GripVertical,
+  Image,
+  Paperclip,
+  Play,
   RefreshCw,
-  Sparkles
+  Sparkles,
+  X
 } from "lucide-react";
-import { useState, type DragEvent } from "react";
+import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { useEditor } from "../../app/EditorContext";
+import type {
+  EditorMediaAsset,
+  EditorStoryBeat,
+  EditorStoryReferenceAsset
+} from "../../app/editorTypes";
 import { StoryScriptImportDialog } from "../story-script-import";
+
+interface MentionState {
+  beatId: string;
+  start: number;
+  end: number;
+  query: string;
+}
 
 export const StoryScriptPanel = () => {
   const {
+    assets,
     generateStoryboardVideos,
+    importFiles,
     isAiGeneratingStoryboard,
     moveStoryBeat,
     selectedStoryBeatIdsForGeneration,
     storyboardGenerationProgress,
     storyBeats,
+    storyGenerationMode,
+    storyReferenceAssets,
     toggleStoryBeatGenerationSelection,
-    updateStoryBeat
+    updateStoryBeat,
+    updateStoryGenerationMode,
+    updateStoryReferenceAssets
   } = useEditor();
   const [draggedBeatId, setDraggedBeatId] = useState<string>();
   const [dropTargetId, setDropTargetId] = useState<string>();
   const [isImportDialogOpen, setIsImportDialogOpen] = useState(false);
-  const hasStoryContent = storyBeats.some(
+  const [mention, setMention] = useState<MentionState>();
+  const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const contentBeats = storyBeats.filter(
     (beat) => beat.description.trim().length > 0
   );
+  const activeContentBeats = contentBeats.filter(
+    (beat) => beat.generationMode === storyGenerationMode
+  );
+  const hasStoryContent = activeContentBeats.length > 0;
   const selectedContentBeatCount = selectedStoryBeatIdsForGeneration.filter(
     (beatId) =>
-      storyBeats.some(
-        (beat) => beat.id === beatId && beat.description.trim().length > 0
-      )
+      activeContentBeats.some((beat) => beat.id === beatId)
   ).length;
+  const references = storyReferenceAssets
+    .map((reference) => ({
+      ...reference,
+      asset: assets.find((asset) => asset.id === reference.assetId)
+    }))
+    .filter(
+      (reference): reference is typeof reference & { asset: EditorMediaAsset } =>
+        Boolean(reference.asset)
+    );
 
   const handleDragStart = (
     event: DragEvent<HTMLElement>,
@@ -77,12 +112,78 @@ export const StoryScriptPanel = () => {
     setDropTargetId(undefined);
   };
 
+  const handleReferenceUpload = async (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = event.currentTarget.files;
+    if (!files?.length) {
+      return;
+    }
+
+    const result = await importFiles(files);
+    const supportedAssets = result.assets.filter(
+      (asset) => asset.kind === "image" || asset.kind === "video"
+    );
+    if (supportedAssets.length > 0) {
+      updateStoryReferenceAssets(
+        appendReferenceAssets(storyReferenceAssets, supportedAssets)
+      );
+    }
+    event.currentTarget.value = "";
+  };
+
+  const handleDescriptionChange = (
+    beat: EditorStoryBeat,
+    event: ChangeEvent<HTMLTextAreaElement>
+  ) => {
+    const description = event.currentTarget.value;
+    const caret = event.currentTarget.selectionStart ?? description.length;
+    updateStoryBeat(beat.id, {
+      description,
+      referenceAssetIds:
+        beat.generationMode === "reference-to-video"
+          ? resolveMentionedReferenceIds(description, storyReferenceAssets)
+          : []
+    });
+    setMention(
+      storyGenerationMode === "reference-to-video"
+        ? findMention(description, caret, beat.id)
+        : undefined
+    );
+  };
+
+  const insertMention = (
+    beat: EditorStoryBeat,
+    reference: EditorStoryReferenceAsset
+  ) => {
+    if (!mention || mention.beatId !== beat.id) {
+      return;
+    }
+
+    const token = `@${reference.label}`;
+    const description = `${beat.description.slice(0, mention.start)}${token} ${beat.description.slice(mention.end)}`;
+    const nextCaret = mention.start + token.length + 1;
+    updateStoryBeat(beat.id, {
+      description,
+      referenceAssetIds: resolveMentionedReferenceIds(
+        description,
+        storyReferenceAssets
+      )
+    });
+    setMention(undefined);
+    requestAnimationFrame(() => {
+      const textarea = textareaRefs.current[beat.id];
+      textarea?.focus();
+      textarea?.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+
   return (
     <section className="panel story-script-panel" data-panel="story-script">
       <div className="story-script-head">
         <div>
           <h2 className="panel-title">分镜脚本</h2>
-          <p>{storyBeats.length - 1} 个分镜</p>
+          <p>{contentBeats.length} 个分镜</p>
         </div>
         <div className="story-script-actions">
           <button
@@ -117,6 +218,98 @@ export const StoryScriptPanel = () => {
           </div>
         </div>
       </div>
+
+      <div className="story-generation-modes" role="tablist">
+        <button
+          aria-selected={storyGenerationMode === "reference-to-video"}
+          className={storyGenerationMode === "reference-to-video" ? "is-active" : ""}
+          onClick={() => updateStoryGenerationMode("reference-to-video")}
+          role="tab"
+          type="button"
+        >
+          参考生成
+        </button>
+        <button
+          aria-selected={storyGenerationMode === "boundary-frames"}
+          className={storyGenerationMode === "boundary-frames" ? "is-active" : ""}
+          onClick={() => {
+            updateStoryGenerationMode("boundary-frames");
+            setMention(undefined);
+          }}
+          role="tab"
+          type="button"
+        >
+          首尾帧生成
+        </button>
+      </div>
+
+      {storyGenerationMode === "reference-to-video" ? (
+        <section className="story-reference-library">
+          <div className="story-reference-library-head">
+            <div>
+              <strong>参考素材</strong>
+              <span>统一上传，在分镜提示词中输入 @ 选择引用</span>
+            </div>
+            <label className="story-reference-upload">
+              <Paperclip size={13} />
+              <span>上传图片/视频</span>
+              <input
+                accept="image/*,video/*"
+                multiple
+                onChange={(event) => void handleReferenceUpload(event)}
+                type="file"
+              />
+            </label>
+          </div>
+          {references.length > 0 ? (
+            <div className="story-reference-library-assets">
+              {references.map((reference) => {
+                const usageCount = storyBeats.filter((beat) =>
+                  beat.referenceAssetIds?.includes(reference.id)
+                ).length;
+                return (
+                  <div className="story-reference-library-item" key={reference.assetId}>
+                    <div className="story-reference-library-thumb">
+                      {reference.asset.kind === "image" ? (
+                        <img
+                          alt=""
+                          src={
+                            reference.asset.thumbnailUrl ??
+                            reference.asset.objectUrl ??
+                            reference.asset.fileUrl
+                          }
+                        />
+                      ) : reference.asset.thumbnailUrl ? (
+                        <img alt="" src={reference.asset.thumbnailUrl} />
+                      ) : (
+                        <Play size={18} />
+                      )}
+                    </div>
+                    <div className="story-reference-library-meta">
+                      <strong>{reference.label}</strong>
+                      <span>{usageCount > 0 ? `${usageCount} 个分镜引用` : "尚未引用"}</span>
+                    </div>
+                    <button
+                      aria-label={`删除${reference.label}`}
+                      onClick={() => removeGlobalReference(reference)}
+                      title="从参考素材库删除"
+                      type="button"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="story-reference-empty">尚未上传参考素材</p>
+          )}
+        </section>
+      ) : (
+        <div className="story-boundary-mode-note">
+          首尾帧模式使用相邻分镜的边界画面保持镜头连续，不使用参考素材库。
+        </div>
+      )}
 
       {isAiGeneratingStoryboard && storyboardGenerationProgress ? (
         <div className="story-progress-card">
@@ -163,6 +356,14 @@ export const StoryScriptPanel = () => {
           const isGeneratingCurrent =
             isAiGeneratingStoryboard &&
             storyboardGenerationProgress?.segmentId === beat.id;
+          const isInactiveMode = beat.generationMode !== storyGenerationMode;
+          const isInteractionDisabled = isTrailingBlank || isInactiveMode;
+          const mentionOptions =
+            storyGenerationMode === "reference-to-video" && mention?.beatId === beat.id
+              ? references.filter(({ label }) =>
+                  label.toLowerCase().includes(mention.query.toLowerCase())
+                )
+              : [];
 
           return (
             <article
@@ -171,6 +372,8 @@ export const StoryScriptPanel = () => {
                 isTrailingBlank ? "is-blank" : "",
                 isDragging ? "is-dragging" : "",
                 isDropTarget ? "is-drop-target" : "",
+                isInactiveMode ? "is-inactive-mode" : "",
+                !isInactiveMode &&
                 selectedStoryBeatIdsForGeneration.includes(beat.id)
                   ? "is-selected-for-generation"
                   : "",
@@ -188,14 +391,21 @@ export const StoryScriptPanel = () => {
                   setDropTargetId(undefined);
                 }
               }}
-              onDragOver={(event) => handleDragOver(event, beat.id, isTrailingBlank)}
-              onDrop={(event) => handleDrop(event, beat.id, isTrailingBlank)}
+              onDragOver={(event) =>
+                handleDragOver(event, beat.id, isInteractionDisabled)
+              }
+              onDrop={(event) =>
+                handleDrop(event, beat.id, isInteractionDisabled)
+              }
               >
               <label className="story-select-field" title="勾选后只生成这些分镜">
                 <input
                   aria-label={`选择生成分镜 ${index + 1}`}
-                  checked={selectedStoryBeatIdsForGeneration.includes(beat.id)}
-                  disabled={isTrailingBlank || isAiGeneratingStoryboard}
+                  checked={
+                    !isInactiveMode &&
+                    selectedStoryBeatIdsForGeneration.includes(beat.id)
+                  }
+                  disabled={isInteractionDisabled || isAiGeneratingStoryboard}
                   onChange={() => toggleStoryBeatGenerationSelection(beat.id)}
                   type="checkbox"
                 />
@@ -204,10 +414,10 @@ export const StoryScriptPanel = () => {
               <button
                 aria-label={`拖动分镜 ${index + 1}`}
                 className="story-drag-handle"
-                disabled={isTrailingBlank}
-                draggable={!isTrailingBlank}
+                disabled={isInteractionDisabled}
+                draggable={!isInteractionDisabled}
                 onDragStart={(event) =>
-                  handleDragStart(event, beat.id, isTrailingBlank)
+                  handleDragStart(event, beat.id, isInteractionDisabled)
                 }
                 title="拖动排序"
                 type="button"
@@ -216,16 +426,70 @@ export const StoryScriptPanel = () => {
               </button>
 
               <div className="story-description-field">
-                <span>{String(index + 1).padStart(2, "0")}</span>
+                <span className="story-segment-number">
+                  {String(index + 1).padStart(2, "0")}
+                </span>
+                <span className={`story-generation-type is-${beat.generationMode}`}>
+                  {beat.generationMode === "reference-to-video"
+                    ? "参考"
+                    : "首尾帧"}
+                </span>
                 <textarea
                   aria-label={`分镜 ${index + 1} 描述`}
-                  onChange={(event) =>
-                    updateStoryBeat(beat.id, { description: event.target.value })
+                  onBlur={() => {
+                    window.setTimeout(() => {
+                      setMention((current) =>
+                        current?.beatId === beat.id ? undefined : current
+                      );
+                    }, 120);
+                  }}
+                  onChange={(event) => handleDescriptionChange(beat, event)}
+                  onClick={(event) => {
+                    const caret = event.currentTarget.selectionStart;
+                    setMention(
+                      !isInactiveMode &&
+                        storyGenerationMode === "reference-to-video"
+                        ? findMention(beat.description, caret, beat.id)
+                        : undefined
+                    );
+                  }}
+                  placeholder={
+                    storyGenerationMode === "reference-to-video"
+                      ? "分镜描述；输入 @ 引用图片或视频"
+                      : "分镜描述；首尾帧将自动衔接相邻镜头"
                   }
-                  placeholder="分镜描述"
+                  ref={(element) => {
+                    textareaRefs.current[beat.id] = element;
+                  }}
+                  readOnly={isInactiveMode}
                   rows={2}
                   value={beat.description}
                 />
+                {mention?.beatId === beat.id ? (
+                  <div className="story-mention-menu" role="listbox">
+                    {mentionOptions.length > 0 ? (
+                      mentionOptions.map((reference) => (
+                        <button
+                          key={reference.assetId}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => insertMention(beat, reference)}
+                          role="option"
+                          type="button"
+                        >
+                          {reference.asset.kind === "image" ? (
+                            <Image size={14} />
+                          ) : (
+                            <Play size={14} />
+                          )}
+                          <span>@{reference.label}</span>
+                          <small>{reference.asset.name}</small>
+                        </button>
+                      ))
+                    ) : (
+                      <p>请先为当前分镜添加参考图片或视频</p>
+                    )}
+                  </div>
+                ) : null}
                 {isGeneratingCurrent ? (
                   <small>{storyboardGenerationProgress.message}</small>
                 ) : null}
@@ -242,6 +506,7 @@ export const StoryScriptPanel = () => {
                   }
                   step={0.1}
                   type="number"
+                  disabled={isInteractionDisabled}
                   value={formatDurationInput(beat.durationSec)}
                 />
                 <span>秒</span>
@@ -250,7 +515,7 @@ export const StoryScriptPanel = () => {
               <button
                 aria-label={`替换生成分镜 ${index + 1}`}
                 className="story-regenerate-button"
-                disabled={isTrailingBlank || isAiGeneratingStoryboard}
+                disabled={isInteractionDisabled || isAiGeneratingStoryboard}
                 onClick={() => {
                   void generateStoryboardVideos(beat.id);
                 }}
@@ -269,7 +534,118 @@ export const StoryScriptPanel = () => {
       />
     </section>
   );
+
+  function removeGlobalReference(
+    reference: EditorStoryReferenceAsset
+  ) {
+    const escapedLabel = escapeRegExp(reference.label);
+    updateStoryReferenceAssets(
+      storyReferenceAssets.filter(
+        (candidate) => candidate.assetId !== reference.assetId
+      )
+    );
+    for (const beat of storyBeats) {
+      const description = beat.description
+        .replace(new RegExp(`@${escapedLabel}(?!\\d)\\s?`, "g"), "")
+        .replace(/ {2,}/g, " ");
+      if (
+        description !== beat.description ||
+        beat.referenceAssetIds?.includes(reference.id)
+      ) {
+        updateStoryBeat(beat.id, {
+          description,
+          referenceAssetIds: (beat.referenceAssetIds ?? []).filter(
+            (referenceId) => referenceId !== reference.id
+          )
+        });
+      }
+    }
+  }
 };
+
+function appendReferenceAssets(
+  current: EditorStoryReferenceAsset[],
+  assets: EditorMediaAsset[]
+): EditorStoryReferenceAsset[] {
+  const existingIds = new Set(current.map((reference) => reference.assetId));
+  const next = [...current];
+
+  for (const asset of assets) {
+    if (
+      existingIds.has(asset.id) ||
+      (asset.kind !== "image" && asset.kind !== "video")
+    ) {
+      continue;
+    }
+    next.push({
+      id: `story-reference-${crypto.randomUUID()}`,
+      assetId: asset.id,
+      kind: asset.kind,
+      label: uniqueReferenceLabel(asset.name, next)
+    });
+    existingIds.add(asset.id);
+  }
+
+  return next;
+}
+
+function uniqueReferenceLabel(
+  originalName: string,
+  references: EditorStoryReferenceAsset[]
+): string {
+  const normalizedName = originalName.trim() || "未命名素材";
+  const usedLabels = new Set(references.map((reference) => reference.label));
+  if (!usedLabels.has(normalizedName)) {
+    return normalizedName;
+  }
+
+  let suffix = 2;
+  while (usedLabels.has(`${normalizedName} (${suffix})`)) {
+    suffix += 1;
+  }
+  return `${normalizedName} (${suffix})`;
+}
+
+function findMention(
+  description: string,
+  caret: number,
+  beatId: string
+): MentionState | undefined {
+  const beforeCaret = description.slice(0, caret);
+  const match = beforeCaret.match(/@([^\s@]*)$/);
+  if (!match || match.index === undefined) {
+    return undefined;
+  }
+  return {
+    beatId,
+    start: match.index,
+    end: caret,
+    query: match[1]
+  };
+}
+
+function hasMention(description: string, label: string): boolean {
+  return new RegExp(`@${escapeRegExp(label)}(?!\\d)`).test(description);
+}
+
+function resolveMentionedReferenceIds(
+  description: string,
+  references: EditorStoryReferenceAsset[]
+): string[] {
+  return references
+    .map((reference) => ({
+      reference,
+      mentionIndex: description.indexOf(`@${reference.label}`)
+    }))
+    .filter(({ reference }) => hasMention(description, reference.label))
+    .sort((first, second) => first.mentionIndex - second.mentionIndex)
+    .map(({ reference }) => reference)
+    .map((reference) => reference.id);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function resolveProgressPercent(progress: NonNullable<ReturnType<typeof useEditor>["storyboardGenerationProgress"]>): number {
   if (progress.progress !== undefined) {

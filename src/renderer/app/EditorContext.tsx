@@ -24,6 +24,7 @@ import type {
   EditorMediaAsset,
   EditorRgbColor,
   EditorStoryBeat,
+  EditorStoryReferenceAsset,
   EditorTimelineClip,
   EditorTimelineTrackId,
   ImportMediaResult,
@@ -78,6 +79,8 @@ interface EditorContextValue {
   selectedAssetId?: string;
   selectedClipId?: string;
   storyBeats: EditorStoryBeat[];
+  storyReferenceAssets: EditorStoryReferenceAsset[];
+  storyGenerationMode: "reference-to-video" | "boundary-frames";
   selectedStoryBeatIdsForGeneration: string[];
   timelineDurationSec: number;
   timelineFps?: number;
@@ -96,6 +99,8 @@ interface EditorContextValue {
   selectAsset(assetId: string): void;
   selectClip(clipId: string): void;
   updateStoryBeat(beatId: string, changes: Partial<Omit<EditorStoryBeat, "id">>): void;
+  updateStoryReferenceAssets(references: EditorStoryReferenceAsset[]): void;
+  updateStoryGenerationMode(mode: "reference-to-video" | "boundary-frames"): void;
   importStoryBeats(
     beats: StoryScriptDocumentBeat[],
     mode: StoryScriptImportMode
@@ -150,6 +155,12 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
   const [storyBeats, setStoryBeats] = useState<EditorStoryBeat[]>(() => [
     createBlankStoryBeat()
   ]);
+  const [storyReferenceAssets, setStoryReferenceAssets] = useState<
+    EditorStoryReferenceAsset[]
+  >([]);
+  const [storyGenerationMode, setStoryGenerationMode] = useState<
+    "reference-to-video" | "boundary-frames"
+  >("reference-to-video");
   const [
     selectedStoryBeatIdsForGeneration,
     setSelectedStoryBeatIdsForGeneration
@@ -214,6 +225,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       setAssets(editorState.assets);
       setTimelineClips(editorState.timelineClips);
       setStoryBeats(editorState.storyBeats);
+      setStoryReferenceAssets(editorState.storyReferenceAssets);
+      setStoryGenerationMode(editorState.storyGenerationMode);
       setSelectedStoryBeatIdsForGeneration([]);
       setSelectedClipId(editorState.selectedClipId);
       setSelectedAssetId(selectedClip?.assetId ?? editorState.assets[0]?.id);
@@ -253,6 +266,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         assets: storedAssets,
         timelineClips,
         storyBeats,
+        storyReferenceAssets,
+        storyGenerationMode,
         playheadSec,
         selectedClipId
       });
@@ -262,7 +277,15 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         project: nextProject
       });
     },
-    [assets, playheadSec, selectedClipId, storyBeats, timelineClips]
+    [
+      assets,
+      playheadSec,
+      selectedClipId,
+      storyBeats,
+      storyReferenceAssets,
+      storyGenerationMode,
+      timelineClips
+    ]
   );
 
   const createProject = useCallback(
@@ -371,15 +394,21 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       }
 
       const contentBeats = storyBeats.filter((beat) => !isBlankStoryBeat(beat));
-      if (contentBeats.length === 0) {
-        const message = "请先填写分镜脚本";
+      const activeContentBeats = contentBeats.filter(
+        (beat) => beat.generationMode === storyGenerationMode
+      );
+      if (activeContentBeats.length === 0) {
+        const message =
+          storyGenerationMode === "reference-to-video"
+            ? "请先填写参考生成分镜脚本"
+            : "请先填写首尾帧分镜脚本";
         setProjectMessage(message);
         return { ok: false, message };
       }
 
       if (
         replaceBeatId &&
-        !contentBeats.some((beat) => beat.id === replaceBeatId)
+        !activeContentBeats.some((beat) => beat.id === replaceBeatId)
       ) {
         const message = "没有找到要替换的分镜";
         setProjectMessage(message);
@@ -390,7 +419,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         ? [replaceBeatId]
         : resolveStoryboardTargetSegmentIds({
             project,
-            contentBeats,
+            contentBeats: activeContentBeats,
             assets,
             timelineClips,
             selectedStoryBeatIdsForGeneration
@@ -400,8 +429,23 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         setProjectMessage(message);
         return { ok: true, message };
       }
+      if (storyGenerationMode === "reference-to-video") {
+        const missingReferenceBeat = activeContentBeats.find(
+          (beat) =>
+            targetSegmentIds.includes(beat.id) &&
+            (beat.referenceAssetIds?.length ?? 0) === 0
+        );
+        if (missingReferenceBeat) {
+          const segmentNumber = contentBeats.findIndex(
+            (beat) => beat.id === missingReferenceBeat.id
+          ) + 1;
+          const message = `分镜 ${segmentNumber} 尚未通过 @ 引用任何图片或视频。`;
+          setProjectMessage(message);
+          return { ok: false, message };
+        }
+      }
       const selectedContentBeatIds = selectedStoryBeatIdsForGeneration.filter(
-        (beatId) => contentBeats.some((beat) => beat.id === beatId)
+        (beatId) => activeContentBeats.some((beat) => beat.id === beatId)
       );
 
       try {
@@ -418,14 +462,15 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
         setAssets(savedEditorState.assets);
         setIsProjectDirty(false);
 
-        const provider = await resolveStoryboardGenerationProvider();
+        const provider = await resolveStoryboardGenerationProvider(storyGenerationMode);
         const jobs = await desktopApi.ai.generateStoryboard({
           projectRootPath,
           script: contentBeats.map((beat) => beat.description.trim()).join("\n"),
           segments: contentBeats.map((beat) => ({
             id: beat.id,
             text: beat.description.trim(),
-            durationSec: beat.durationSec
+            durationSec: beat.durationSec,
+            referenceAssetIds: beat.referenceAssetIds
           })),
           targetSegmentIds,
           replaceSegmentId: replaceBeatId,
@@ -437,7 +482,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
           aspectRatio: formatProjectAspectRatio(
             savedSession.project.settings.width,
             savedSession.project.settings.height
-          )
+          ),
+          generationMode: storyGenerationMode
         });
         const refreshedSession = await desktopApi.project.open({ projectRootPath });
         const failedJobs = jobs.filter((job) => job.status === "failed");
@@ -476,9 +522,10 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       project,
       projectRuntime,
       saveEditorStateToProject,
-    selectedClipId,
-    selectedStoryBeatIdsForGeneration,
-    storyBeats,
+      selectedClipId,
+      selectedStoryBeatIdsForGeneration,
+      storyBeats,
+      storyGenerationMode,
       timelineClips
     ]
   );
@@ -615,6 +662,38 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
     [markProjectDirty]
   );
 
+  const updateStoryReferenceAssets = useCallback(
+    (references: EditorStoryReferenceAsset[]) => {
+      setStoryReferenceAssets(references);
+      markProjectDirty();
+    },
+    [markProjectDirty]
+  );
+
+  const updateStoryGenerationMode = useCallback(
+    (mode: "reference-to-video" | "boundary-frames") => {
+      setStoryGenerationMode(mode);
+      setSelectedStoryBeatIdsForGeneration((current) =>
+        current.filter((beatId) =>
+          storyBeats.some(
+            (beat) => beat.id === beatId && beat.generationMode === mode
+          )
+        )
+      );
+      setStoryBeats((current) => {
+        const trailingBeat = current[current.length - 1];
+        if (!trailingBeat || !isBlankStoryBeat(trailingBeat)) {
+          return current;
+        }
+        return current.map((beat, index) =>
+          index === current.length - 1 ? { ...beat, generationMode: mode } : beat
+        );
+      });
+      markProjectDirty();
+    },
+    [markProjectDirty, storyBeats]
+  );
+
   const importStoryBeats = useCallback(
     (beats: StoryScriptDocumentBeat[], mode: StoryScriptImportMode) => {
       if (beats.length === 0) {
@@ -623,7 +702,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
 
       const normalizedBeats = beats.map((beat) => ({
         description: beat.description.trim(),
-        durationSec: normalizeStoryBeatDuration(beat.durationSec)
+        durationSec: normalizeStoryBeatDuration(beat.durationSec),
+        generationMode: storyGenerationMode
       }));
       setStoryBeats((current) => {
         const currentContent = current.filter((beat) => !isBlankStoryBeat(beat));
@@ -657,7 +737,7 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       });
       markProjectDirty();
     },
-    [markProjectDirty]
+    [markProjectDirty, storyGenerationMode]
   );
 
   const toggleStoryBeatGenerationSelection = useCallback((beatId: string) => {
@@ -1041,6 +1121,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectedAssetId,
       selectedClipId,
       storyBeats,
+      storyReferenceAssets,
+      storyGenerationMode,
       selectedStoryBeatIdsForGeneration,
       selectedAsset,
       selectedClip,
@@ -1059,6 +1141,8 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectAsset,
       selectClip,
       updateStoryBeat,
+      updateStoryReferenceAssets,
+      updateStoryGenerationMode,
       importStoryBeats,
       toggleStoryBeatGenerationSelection,
       moveStoryBeat,
@@ -1109,13 +1193,17 @@ export const EditorProvider = ({ children }: { children: ReactNode }) => {
       selectedStoryBeatIdsForGeneration,
       setPlayhead,
       storyBeats,
+      storyReferenceAssets,
+      storyGenerationMode,
       toggleStoryBeatGenerationSelection,
       moveStoryBeat,
       splitClip,
       timelineFps,
       timelineDurationSec,
       timelineClips,
-      updateStoryBeat
+      updateStoryBeat,
+      updateStoryReferenceAssets,
+      updateStoryGenerationMode
     ]
   );
 
@@ -1136,9 +1224,25 @@ interface StoryboardGenerationProvider {
   modelId?: string;
 }
 
-async function resolveStoryboardGenerationProvider(): Promise<StoryboardGenerationProvider> {
+async function resolveStoryboardGenerationProvider(
+  generationMode: "reference-to-video" | "boundary-frames"
+): Promise<StoryboardGenerationProvider> {
   try {
     const config = await desktopApi.config.get();
+    if (
+      generationMode === "reference-to-video" &&
+      config.providers.volcengineSeedance.enabled
+    ) {
+      return {
+        providerId: "volcengine-seedance",
+        modelId: config.providers.volcengineSeedance.reqKey
+      };
+    }
+
+    if (generationMode === "reference-to-video") {
+      throw new Error("参考生成需要先在模型设置中启用 Seedance。");
+    }
+
     if (config.providers.googleVeo.enabled) {
       return {
         providerId: "google-veo",
@@ -1152,7 +1256,10 @@ async function resolveStoryboardGenerationProvider(): Promise<StoryboardGenerati
         modelId: config.providers.volcengineSeedance.reqKey
       };
     }
-  } catch {
+  } catch (error) {
+    if (generationMode === "reference-to-video") {
+      throw error;
+    }
     return {
       providerId: "mock",
       modelId: "mock-video-v1"
@@ -1256,7 +1363,8 @@ function createStoryBeatForTimelineAsset(
   return {
     id,
     description: createTimelineAssetStoryDescription(asset),
-    durationSec: normalizeStoryBeatDuration(durationSec)
+    durationSec: normalizeStoryBeatDuration(durationSec),
+    generationMode: "boundary-frames"
   };
 }
 
@@ -1413,7 +1521,8 @@ function resolveTimelineClipStoryBeat({
     : {
         id: storySegmentId,
         description: "片段",
-        durationSec: normalizeStoryBeatDuration(durationSec)
+        durationSec: normalizeStoryBeatDuration(durationSec),
+        generationMode: "boundary-frames"
       };
 }
 

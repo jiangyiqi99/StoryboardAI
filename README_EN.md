@@ -20,7 +20,13 @@ This project is licensed under the [GNU General Public License v3.0 (GPLv3)](LIC
 
 ## Development and Packaging
 
+Use Node.js 24 LTS for development. The npm `overrides` in `package.json` pins
+`yauzl@^3.3.1` to prevent Electron's older extraction chain from stopping early on
+Node.js 24.16 and newer and leaving an incomplete Electron.app after `npm install`.
+
 ```bash
+nvm use
+npm install
 npm run dev
 npm run build
 ./build --macarm64
