@@ -747,7 +747,6 @@ export class StoryboardToTimelineWorkflow {
 
 function shouldPollGeneration(response: GenerateVideoResponse): boolean {
   return (
-    response.providerId !== "mock" &&
     Boolean(response.providerJobId) &&
     !response.outputUri &&
     !isTerminalGenerationStatus(response.status)

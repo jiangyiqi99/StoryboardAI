@@ -1,6 +1,6 @@
 {
   "name": "storyboard-ai-editor",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "An AI-generated GPLv3 desktop video editor scaffold with AI workflows, built with Electron, React, TypeScript, and FFmpeg.",

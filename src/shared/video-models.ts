@@ -5,12 +5,32 @@ export interface VideoModelOption {
 
 export const SEEDANCE_MODEL_OPTIONS = [
   {
+    id: "doubao-seedance-2-5",
+    label: "Doubao Seedance 2.5"
+  },
+  {
     id: "doubao-seedance-2-0-260128",
     label: "Doubao Seedance 2.0"
   },
   {
     id: "doubao-seedance-2-0-fast-260128",
     label: "Doubao Seedance 2.0 Fast"
+  },
+  {
+    id: "doubao-seedance-2-0-mini-260615",
+    label: "Doubao Seedance 2.0 Mini"
+  },
+  {
+    id: "doubao-seedance-1-5-pro-251215",
+    label: "Doubao Seedance 1.5 Pro"
+  },
+  {
+    id: "doubao-seedance-1-0-pro-250528",
+    label: "Doubao Seedance 1.0 Pro"
+  },
+  {
+    id: "doubao-seedance-1-0-pro-fast-251015",
+    label: "Doubao Seedance 1.0 Pro Fast"
   }
 ] as const satisfies readonly VideoModelOption[];
 

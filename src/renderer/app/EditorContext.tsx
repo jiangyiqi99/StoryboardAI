@@ -1257,19 +1257,10 @@ async function resolveStoryboardGenerationProvider(
       };
     }
   } catch (error) {
-    if (generationMode === "reference-to-video") {
-      throw error;
-    }
-    return {
-      providerId: "mock",
-      modelId: "mock-video-v1"
-    };
+    throw error;
   }
 
-  return {
-    providerId: "mock",
-    modelId: "mock-video-v1"
-  };
+  throw new Error("请先在模型设置中启用并配置 Seedance 或 Google Veo。");
 }
 
 function formatProjectAspectRatio(width: number, height: number): string {

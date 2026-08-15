@@ -32,20 +32,58 @@ const SEEDANCE_MODES = [
   "first-last-frame-to-video"
 ] as const;
 
+const SEEDANCE_STANDARD_MODES = [
+  "text-to-video",
+  "first-frame-to-video",
+  "first-last-frame-to-video"
+] as const;
+
+const seedanceModelCapabilities = (
+  model: (typeof SEEDANCE_MODEL_OPTIONS)[number]
+): ProviderCapabilities["supportedModels"][number] => {
+  if (model.id.startsWith("doubao-seedance-2-")) {
+    return {
+      modelId: model.id,
+      displayName: model.label,
+      supportedModes: [...SEEDANCE_MODES],
+      minDurationSec: 4,
+      maxDurationSec: model.id === "doubao-seedance-2-5" ? 30 : 15,
+      supportsReferenceImages: true,
+      supportsReferenceVideos: true,
+      maxReferenceImages: model.id === "doubao-seedance-2-5" ? 50 : 9,
+      maxReferenceVideos: model.id === "doubao-seedance-2-5" ? 50 : 3
+    };
+  }
+
+  if (model.id === "doubao-seedance-1-0-pro-fast-251015") {
+    return {
+      modelId: model.id,
+      displayName: model.label,
+      supportedModes: ["text-to-video", "first-frame-to-video"],
+      minDurationSec: 2,
+      maxDurationSec: 12,
+      supportsReferenceImages: false,
+      supportsReferenceVideos: false
+    };
+  }
+
+  return {
+    modelId: model.id,
+    displayName: model.label,
+    supportedModes: [...SEEDANCE_STANDARD_MODES],
+    minDurationSec: model.id === "doubao-seedance-1-0-pro-250528" ? 2 : 4,
+    maxDurationSec: 12,
+    supportsReferenceImages: false,
+    supportsReferenceVideos: false
+  };
+};
+
 const capabilities: ProviderCapabilities = {
   providerId: "volcengine-seedance",
   displayName: "Volcengine Ark Seedance",
   authMode: "bearer-token",
   supportedModes: [...SEEDANCE_MODES],
-  supportedModels: SEEDANCE_MODEL_OPTIONS.map((model) => ({
-    modelId: model.id,
-    displayName: model.label,
-    supportedModes: [...SEEDANCE_MODES],
-    supportsReferenceImages: true,
-    supportsReferenceVideos: true,
-    maxReferenceImages: 9,
-    maxReferenceVideos: 3
-  })),
+  supportedModels: SEEDANCE_MODEL_OPTIONS.map(seedanceModelCapabilities),
   supportsNegativePrompt: false,
   supportsSeed: false,
   supportsStylePreset: false,
@@ -57,8 +95,8 @@ const capabilities: ProviderCapabilities = {
   supportsMask: false,
   supportsPolling: true,
   supportsCancel: false,
-  minDurationSec: 4,
-  maxDurationSec: 15,
+  minDurationSec: 2,
+  maxDurationSec: 30,
   supportedAspectRatios: [
     "16:9",
     "4:3",

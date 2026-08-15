@@ -161,6 +161,23 @@ static int media_allocate_video_frame(AVFrame *frame, int width, int height, int
 static int media_frame_writable(AVFrame *frame) { return av_frame_make_writable(frame); }
 static int media_codec_configure_audio(AVCodecContext *codec, int sample_rate, int channels, int bitrate) {
   int supports_fltp = 0;
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+  const enum AVSampleFormat *formats = NULL;
+  int format_count = 0;
+  int config_result = avcodec_get_supported_config(
+    codec,
+    codec->codec,
+    AV_CODEC_CONFIG_SAMPLE_FORMAT,
+    0,
+    (const void **)&formats,
+    &format_count
+  );
+  if (config_result >= 0) {
+    for (int index = 0; index < format_count; index++) {
+      if (formats[index] == AV_SAMPLE_FMT_FLTP) { supports_fltp = 1; break; }
+    }
+  }
+#else
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -177,6 +194,7 @@ static int media_codec_configure_audio(AVCodecContext *codec, int sample_rate, i
 #pragma clang diagnostic pop
 #elif defined(__GNUC__)
 #pragma GCC diagnostic pop
+#endif
 #endif
   if (!supports_fltp) return AVERROR(EINVAL);
   codec->sample_fmt = AV_SAMPLE_FMT_FLTP; codec->sample_rate = sample_rate; codec->bit_rate = bitrate;
